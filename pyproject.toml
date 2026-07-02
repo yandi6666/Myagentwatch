@@ -1,0 +1,18 @@
+[project]
+name = "myagentwatch"
+version = "2.0"
+description = "Multi-Agent Observability Dashboard"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+authors = [{ name = "Tianyu" }]
+classifiers = [
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = ["-v", "--tb=short"]
+
+[tool.ruff]
+extend = "ruff.toml"

@@ -1,0 +1,22 @@
+# MyAgentWatch - Python lint & format configuration
+target-version = "py312"
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes (unused imports, undefined names, etc.)
+    "W",   # pycodestyle warnings
+    "I",   # isort (import ordering)
+    "B",   # flake8-bugbear (common bugs)
+    "SIM", # simplify code
+    "UP",  # pyupgrade (modern Python syntax)
+]
+ignore = [
+    "E501", # line too long — handled by formatter
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
