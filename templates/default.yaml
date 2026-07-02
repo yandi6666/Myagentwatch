@@ -1,0 +1,4 @@
+# 默认通用模板
+template: default
+display_name: "通用 Agent 监控"
+# No overrides — use config.yaml values directly

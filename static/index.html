@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MyAgentWatch — AI Agent Monitor</title>
+<link rel="stylesheet" href="/css/dashboard.css?v=9">
+<link rel="stylesheet" href="/css/log-viewer.css?v=6">
+<link rel="stylesheet" href="/css/chat-wechat.css?v=6">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+</head>
+<body>
+
+<div id="app-shell">
+
+  <!-- Toast container -->
+  <div id="toast-container" style="position:fixed; top:56px; right:16px; z-index:9999; display:flex; flex-direction:column;"></div>
+
+  <!-- ===== TopBar ===== -->
+  <nav id="topbar">
+    <div class="brand">MyAgent<span>Watch</span></div>
+    <div id="tab-nav">
+      <button class="tab-btn active" data-tab="dashboard"><i class="fa-solid fa-chart-pie"></i> 仪表盘</button>
+      <button class="tab-btn" data-tab="list"><i class="fa-solid fa-list"></i> 列表</button>
+      <button class="tab-btn" data-tab="config"><i class="fa-solid fa-sliders"></i> 配置</button>
+      <button class="tab-btn" data-tab="chat"><i class="fa-solid fa-comments"></i> 群聊</button>
+      <button class="tab-btn" data-tab="tasks"><i class="fa-solid fa-diagram-project"></i> 任务</button>
+      <button class="tab-btn" data-tab="logs"><i class="fa-solid fa-scroll"></i> 日志</button>
+      <button class="tab-btn" data-tab="tokens"><i class="fa-solid fa-coins"></i> Token</button>
+      <button class="tab-btn" data-tab="events"><i class="fa-solid fa-bolt"></i> 事件流</button>
+    </div>
+    <div id="topbar-right">
+      <span class="ws-indicator"><span class="ws-dot" id="ws-dot"></span> <span id="ws-text">连接中</span></span>
+      <div class="topbar-search"><input type="text" id="topo-search" placeholder="搜索节点..."><i class="fa-solid fa-search"></i></div>
+      <div class="inbox-container" id="inbox-container">
+        <button class="inbox-bell" id="inbox-bell" onclick="event.stopPropagation(); toggleInboxPanel()" title="通知" style="background:none;border:none;color:var(--text-muted);cursor:pointer;position:relative;padding:6px 8px;font-size:14px;">
+          <i class="fa-solid fa-bell"></i>
+          <span class="inbox-badge" id="inbox-badge" style="display:none;">0</span>
+        </button>
+        <div class="inbox-panel" id="inbox-panel" style="display:none;">
+          <div class="inbox-header">
+            <span>通知</span>
+            <button class="inbox-mark-all" onclick="markAllInboxRead()">全部已读</button>
+          </div>
+          <div class="inbox-list" id="inbox-list">
+            <div class="inbox-empty">暂无通知</div>
+          </div>
+        </div>
+      </div>
+      <button class="topbar-icon-btn" title="设置"><i class="fa-solid fa-gear"></i></button>
+      <div class="topbar-avatar"><i class="fa-solid fa-user"></i></div>
+    </div>
+  </nav>
+
+  <!-- ===== Status Strip ===== -->
+  <div id="status-strip" class="panel-dashboard-only">
+    <div class="status-card">
+      <div class="s-label"><i class="fa-solid fa-robot"></i> 活跃 Agent</div>
+      <div class="s-value active-count" id="s-active">0</div>
+      <div class="s-sub">当前在线</div>
+    </div>
+    <div class="status-card">
+      <div class="s-label"><i class="fa-solid fa-coins"></i> 今日 Token</div>
+      <div class="s-value tokens" id="s-tokens">0</div>
+      <div class="s-sub">Input + Output + Reasoning</div>
+    </div>
+    <div class="status-card">
+      <div class="s-label"><i class="fa-solid fa-circle-check"></i> 成功率</div>
+      <div class="s-value success" id="s-success">0%</div>
+      <div class="s-sub">工具调用成功率</div>
+    </div>
+    <div class="status-card">
+      <div class="s-label"><i class="fa-solid fa-dollar-sign"></i> 今日成本</div>
+      <div class="s-value cost" id="s-cost">$0.00</div>
+      <div class="s-sub">按 API 定价估算</div>
+    </div>
+  </div>
+
+  <!-- ===== Main Content ===== -->
+  <div id="main-content">
+
+    <!-- Dashboard Tab — 合并拓扑图 -->
+    <div class="tab-panel active" id="panel-dashboard">
+      <div class="flex flex-1 overflow-hidden">
+        <!-- 左侧集群总览 -->
+        <aside class="w-60 bg-darker border-r border-slate-700 overflow-y-auto p-4 flex-shrink-0">
+          <h2 class="text-lg font-semibold mb-4 flex items-center"><i class="fa-solid fa-server mr-2"></i>集群总览</h2>
+          <div class="mb-6">
+            <div class="space-y-2" id="topo-filter-list">
+              <div class="flex items-center justify-between p-2 rounded hover:bg-slate-800 cursor-pointer active" data-filter="all">
+                <span><i class="fa-solid fa-circle text-success mr-2"></i>全部节点</span>
+                <span class="text-slate-400 text-sm" id="topo-count-all">0/0</span>
+              </div>
+              <div class="flex items-center justify-between p-2 rounded hover:bg-slate-800 cursor-pointer" data-filter="idle">
+                <span><i class="fa-solid fa-circle text-warning mr-2"></i>等待中</span>
+                <span class="text-slate-400 text-sm" id="topo-count-idle">0</span>
+              </div>
+              <div class="flex items-center justify-between p-2 rounded hover:bg-slate-800 cursor-pointer" data-filter="error">
+                <span><i class="fa-solid fa-circle text-error mr-2"></i>错误</span>
+                <span class="text-slate-400 text-sm" id="topo-count-error">0</span>
+              </div>
+              <div class="flex items-center justify-between p-2 rounded hover:bg-slate-800 cursor-pointer" data-filter="offline">
+                <span><i class="fa-solid fa-circle text-offline mr-2"></i>离线</span>
+                <span class="text-slate-400 text-sm" id="topo-count-offline">0</span>
+              </div>
+            </div>
+          </div>
+          <hr class="border-slate-700 my-4">
+          <div class="space-y-2" id="topo-group-list"></div>
+          <button class="w-full mt-6 py-2 border border-dashed border-slate-600 rounded text-slate-400 hover:border-success hover:text-success transition-colors" disabled>
+            <i class="fa-solid fa-plus mr-2"></i>添加主Agent
+          </button>
+        </aside>
+
+        <!-- 中间拓扑视图 -->
+        <main class="flex-1 flex flex-col overflow-hidden p-6">
+          <div class="flex justify-between items-center mb-4">
+            <h2 class="text-lg font-semibold flex items-center"><i class="fa-solid fa-sitemap mr-2"></i>集群拓扑视图</h2>
+            <div class="space-x-2">
+              <button class="px-3 py-1 text-sm bg-slate-800 rounded hover:bg-slate-700" id="btn-collapse-all">折叠全部</button>
+              <button class="px-3 py-1 text-sm bg-slate-800 rounded hover:bg-slate-700" id="btn-expand-all">展开全部</button>
+            </div>
+          </div>
+          <div class="bg-darker rounded-lg border border-slate-700 p-4 flex-1 overflow-y-auto min-h-0" id="topo-tree-container"></div>
+
+          <!-- 节点详情 -->
+          <div id="topo-detail" style="display:none">
+            <h2 class="text-lg font-semibold mb-4 flex items-center"><i class="fa-solid fa-info-circle mr-2"></i>节点详情<span class="ml-2 text-sm text-slate-400" id="topo-detail-name">(未选中)</span></h2>
+            <div class="bg-darker rounded-lg border border-slate-700">
+              <div class="flex border-b border-slate-700">
+                <button class="px-4 py-2 border-b-2 border-success text-success text-sm topo-detail-tab active" data-tab="info">基本信息</button>
+                <button class="px-4 py-2 text-slate-400 hover:text-white text-sm topo-detail-tab" data-tab="metrics">运行指标</button>
+                <button class="px-4 py-2 text-slate-400 hover:text-white text-sm topo-detail-tab" data-tab="tasks">任务日志</button>
+                <button class="px-4 py-2 text-slate-400 hover:text-white text-sm topo-detail-tab" data-tab="config">配置管理</button>
+              </div>
+              <div class="p-4" id="topo-detail-body"></div>
+              <div class="p-4 pt-0 flex space-x-2" id="topo-detail-actions"></div>
+            </div>
+          </div>
+        </main>
+
+        <!-- 右侧告警 + 操作 + 资源 + 趋势图 -->
+        <aside class="w-60 bg-darker border-l border-slate-700 overflow-y-auto p-4 flex-shrink-0">
+          <h2 class="text-lg font-semibold mb-4 flex items-center"><i class="fa-solid fa-bell mr-2"></i>实时告警</h2>
+          <div class="space-y-3 mb-6" id="topo-alert-list"></div>
+          <button class="w-full text-sm text-slate-400 hover:text-white mb-6">查看全部告警 →</button>
+          <hr class="border-slate-700 my-4">
+          <h2 class="text-lg font-semibold mb-4 flex items-center"><i class="fa-solid fa-bolt mr-2"></i>快捷操作</h2>
+          <div class="space-y-2 mb-6">
+            <button class="w-full py-2 bg-slate-800 rounded text-sm hover:bg-slate-700 text-left px-3" id="btn-restart-all"><i class="fa-solid fa-rotate-right mr-2"></i>全量重启所有子Agent</button>
+            <button class="w-full py-2 bg-slate-800 rounded text-sm hover:bg-slate-700 text-left px-3" id="btn-pause-all"><i class="fa-solid fa-pause mr-2"></i>暂停所有等待中任务</button>
+            <button class="w-full py-2 bg-slate-800 rounded text-sm hover:bg-slate-700 text-left px-3" id="btn-export-report"><i class="fa-solid fa-download mr-2"></i>导出全集群状态报告</button>
+            <button class="w-full py-2 bg-slate-800 rounded text-sm hover:bg-slate-700 text-left px-3" id="btn-refresh-all"><i class="fa-solid fa-sync mr-2"></i>刷新所有节点状态</button>
+          </div>
+          <hr class="border-slate-700 my-4">
+          <h2 class="text-lg font-semibold mb-4 flex items-center"><i class="fa-solid fa-chart-line mr-2"></i>资源概览</h2>
+          <div class="space-y-3 mb-6" id="topo-resource-list">
+            <div>
+              <div class="flex justify-between text-sm mb-1"><span>CPU使用率</span><span id="res-cpu-val">--</span></div>
+              <div class="w-full bg-slate-700 rounded-full h-2"><div class="bg-success h-2 rounded-full transition-all" id="res-cpu-bar" style="width:0%"></div></div>
+            </div>
+            <div>
+              <div class="flex justify-between text-sm mb-1"><span>内存使用率</span><span id="res-mem-val">--</span></div>
+              <div class="w-full bg-slate-700 rounded-full h-2"><div class="bg-warning h-2 rounded-full transition-all" id="res-mem-bar" style="width:0%"></div></div>
+            </div>
+            <div>
+              <div class="flex justify-between text-sm mb-1"><span>磁盘使用率</span><span id="res-disk-val">--</span></div>
+              <div class="w-full bg-slate-700 rounded-full h-2"><div class="bg-blue-500 h-2 rounded-full transition-all" id="res-disk-bar" style="width:0%"></div></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+
+    </div>
+
+    <!-- List Tab -->
+    <div class="tab-panel" id="panel-list">
+      <div class="list-toolbar" style="display:flex; gap:8px; padding:8px 0; align-items:center;">
+        <input type="text" id="list-search" placeholder="🔍 搜索 Agent 名称或分组..." style="flex:1; background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-primary); padding:6px 10px; border-radius:var(--radius-sm); font-size:12px;">
+        <select id="list-source-filter" style="background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-primary); padding:6px 10px; border-radius:var(--radius-sm); font-size:12px;">
+          <option value="">全部来源</option>
+        </select>
+      </div>
+      <div id="list-view-inner"></div>
+    </div>
+
+    <!-- Config Tab -->
+    <div class="tab-panel" id="panel-config">
+      <div class="config-section glass" style="flex:1; overflow-y:auto;">
+        <h3><i class="fa-solid fa-gear"></i> 当前配置</h3>
+        <div style="margin-bottom:12px; display:flex; gap:8px; align-items:center;">
+          <label style="font-size:12px; color:var(--text-muted);">行业模板:</label>
+          <select id="template-select" style="background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-primary); padding:6px 10px; border-radius:var(--radius-sm); font-size:12px;">
+            <option value="default">默认 (通用)</option>
+          </select>
+          <button id="template-apply" style="background:var(--accent); color:#fff; border:none; padding:6px 12px; border-radius:var(--radius-sm); cursor:pointer; font-size:12px;">
+            <i class="fa-solid fa-check"></i> 应用
+          </button>
+        </div>
+        <pre id="config-display">加载中...</pre>
+      </div>
+    </div>
+
+    <!-- Token Dashboard Tab -->
+    <div class="tab-panel" id="panel-tokens">
+      <div class="token-dashboard glass" style="flex:1; display:flex; flex-direction:column; overflow-y:auto; padding:16px;">
+        <div id="token-unmapped-alert" style="display:none; background:rgba(245,158,11,0.12); border:1px solid rgba(245,158,11,0.3); border-radius:6px; padding:8px 12px; margin-bottom:10px; font-size:12px; color:#f59e0b;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="margin:0;"><i class="fa-solid fa-coins"></i> Token 用量分析</h3>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <label style="font-size:12px; color:var(--text-muted);">天数:</label>
+            <select id="token-days" style="background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-primary); padding:4px 8px; border-radius:var(--radius-sm); font-size:12px;" onchange="if(typeof TokenDashboard!=='undefined')TokenDashboard.load()">
+              <option value="1">1 天</option>
+              <option value="7" selected>7 天</option>
+              <option value="14">14 天</option>
+              <option value="30">30 天</option>
+            </select>
+          </div>
+        </div>
+        <div id="token-chart" style="height:220px; margin-bottom:16px;"></div>
+        <div style="flex:1; overflow-y:auto;">
+          <table class="token-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left; padding:6px 8px; color:var(--text-muted);">厂商</th>
+                <th style="text-align:left; padding:6px 8px; color:var(--text-muted);">模型</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">总 Token</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">Input</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">Output</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">费用</th>
+              </tr>
+            </thead>
+            <tbody id="token-model-tbody">
+              <tr><td colspan="6" class="empty-state">加载中...</td></tr>
+            </tbody>
+          </table>
+          <!-- 按 Agent 费用 -->
+          <table class="token-table" style="width:100%; border-collapse:collapse; font-size:12px; margin-top:14px;">
+            <thead>
+              <tr style="border-bottom:1px solid var(--border);">
+                <th style="text-align:left; padding:6px 8px; color:var(--text-muted);">Agent</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">总 Token</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">任务数</th>
+                <th style="text-align:right; padding:6px 8px; color:var(--text-muted);">费用</th>
+              </tr>
+            </thead>
+            <tbody id="token-agent-tbody">
+              <tr><td colspan="4" class="empty-state">加载中...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- 趋势图表 -->
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+          <h4 style="margin:0 0 10px 0; color:var(--text-secondary); font-size:13px;">📉 趋势概览</h4>
+          <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px;">
+            <div class="chart-mini-card"><canvas id="token-bar-chart"></canvas></div>
+            <div class="chart-mini-card"><canvas id="cost-line-chart"></canvas></div>
+            <div class="chart-mini-card"><canvas id="latency-line-chart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat Tab — 微信风格三栏 -->
+    <div class="tab-panel" id="panel-chat">
+      <!-- 左栏: 会话列表 (20%) -->
+      <div id="chat-left">
+        <div class="chat-conv-search">
+          <i class="fa-solid fa-search chat-search-icon"></i>
+          <input type="text" placeholder="搜索会话..." oninput="WeChat.searchContacts(this.value)">
+        </div>
+        <div id="chat-conv-list"></div>
+      </div>
+
+      <!-- 中栏: 消息流 (55%) -->
+      <div id="chat-middle">
+        <div id="chat-header-bar">
+          <div id="chat-header-name">群聊广播</div>
+          <div id="chat-header-status" class="chat-online">在线</div>
+          <div class="chat-header-actions">
+            <i class="fa-solid fa-search" title="搜索"></i>
+            <i class="fa-solid fa-ellipsis-vertical" title="更多"></i>
+          </div>
+        </div>
+        <div id="chat-messages"></div>
+        <div class="chat-input-row">
+          <div class="chat-input-tools">
+            <button title="表情"><i class="fa-regular fa-face-smile"></i></button>
+            <button title="附件"><i class="fa-solid fa-paperclip"></i></button>
+            <button title="代码"><i class="fa-solid fa-code"></i></button>
+          </div>
+          <div class="chat-input-wrap">
+            <input type="text" id="chat-input-area" placeholder="输入消息... (Enter 发送)"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();WeChat.sendMessage();}">
+            <button class="chat-send-btn" onclick="WeChat.sendMessage()">发送</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右栏: Agent 详情 (25%) -->
+      <div id="chat-right">
+        <div id="chat-detail-card">
+          <div id="chat-detail-avatar"></div>
+          <div id="chat-detail-name">群聊广播</div>
+          <div id="chat-detail-status"></div>
+          <div class="chat-detail-stats">
+            <div class="chat-detail-stat"><span class="chat-detail-label">模型</span><span id="chat-detail-model">--</span></div>
+            <div class="chat-detail-stat"><span class="chat-detail-label">来源</span><span id="chat-detail-source">--</span></div>
+            <div class="chat-detail-stat"><span class="chat-detail-label">今日消息</span><span id="chat-detail-msgs">--</span></div>
+            <div class="chat-detail-stat"><span class="chat-detail-label">今日消耗</span><span id="chat-detail-cost">--</span></div>
+          </div>
+          <div class="chat-detail-actions">
+            <button onclick="WeChat.clearChat()"><i class="fa-solid fa-trash"></i> 清空会话</button>
+          </div>
+        </div>
+        <div id="chat-contacts-title"><i class="fa-solid fa-address-book"></i> Agent 通讯录</div>
+        <div id="chat-contacts"></div>
+      </div>
+    </div>
+
+    <!-- Tasks Tab -->
+    <div class="tab-panel" id="panel-tasks">
+      <div class="tasks-shell glass">
+        <div class="tasks-header">
+          <div>
+            <h3><i class="fa-solid fa-diagram-project"></i> 任务系统</h3>
+            <p>Agent 状态、群聊结果、错误信号自动推动任务流转；人工操作只作兜底。</p>
+          </div>
+          <button class="task-refresh-btn" onclick="TaskBoard.load()"><i class="fa-solid fa-rotate-right"></i> 刷新</button>
+        </div>
+        <div class="task-create-row">
+          <input id="task-title-input" type="text" placeholder="新任务标题...">
+          <input id="task-agent-input" type="text" placeholder="指派 Agent ID（可选）">
+          <select id="task-priority-input">
+            <option value="0">普通</option>
+            <option value="1">高优先级</option>
+            <option value="2">紧急</option>
+          </select>
+          <button onclick="TaskBoard.createTask()"><i class="fa-solid fa-plus"></i> 新建</button>
+        </div>
+        <div class="task-board" id="task-board">
+          <div class="task-empty">加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Logs Tab — 三栏布局 -->
+    <div class="tab-panel" id="panel-logs" style="flex-direction:column;">
+      <!-- 日志控制栏 -->
+      <div id="log-controls" class="glass" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:10px 14px; margin:10px 14px 0; font-size:13px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <select onchange="LogViewer.setTimeRange(this.value)" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); font-size:13px;">
+            <option value="15m">最近15分钟</option>
+            <option value="1h">最近1小时</option>
+            <option value="today">今天</option>
+            <option value="all" selected>全部</option>
+          </select>
+          <select onchange="LogViewer.setSeverity(this.value)" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); font-size:13px;">
+            <option value="">所有级别</option>
+            <option value="info">INFO及以上</option>
+            <option value="warn">WARN及以上</option>
+            <option value="error">仅ERROR</option>
+          </select>
+          <span style="color:var(--text-muted);">类别:</span>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:3px; font-size:12px;"><input type="checkbox" id="cat-思考" checked onchange="LogViewer.toggleCategory('思考')"> 思考</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:3px; font-size:12px;"><input type="checkbox" id="cat-工具" checked onchange="LogViewer.toggleCategory('工具')"> 工具</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:3px; font-size:12px;"><input type="checkbox" id="cat-交互" checked onchange="LogViewer.toggleCategory('交互')"> 交互</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:3px; font-size:12px;"><input type="checkbox" id="cat-输出" checked onchange="LogViewer.toggleCategory('输出')"> 输出</label>
+          <label style="cursor:pointer; display:flex; align-items:center; gap:3px; font-size:12px;"><input type="checkbox" id="cat-系统" checked onchange="LogViewer.toggleCategory('系统')"> 系统</label>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <input type="text" id="log-search-input" placeholder="搜索关键词..." onkeydown="if(event.key==='Enter')LogViewer.doSearch()" style="background:rgba(255,255,255,0.06); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); font-size:12px; width:140px;">
+          <button onclick="LogViewer.doSearch()" style="background:var(--bg-card); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); cursor:pointer; font-size:12px;"><i class="fa-solid fa-search"></i></button>
+          <button id="btn-realtime" onclick="LogViewer.toggleRealtime()" style="background:var(--status-active); border:none; border-radius:4px; padding:4px 12px; color:#fff; cursor:pointer; font-size:12px;"><i class="fa-solid fa-play"></i> 实时</button>
+          <button onclick="LogViewer.clearView()" style="background:var(--bg-card); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); cursor:pointer; font-size:12px;"><i class="fa-solid fa-trash"></i> 清空</button>
+          <button onclick="LogViewer.exportLogs()" style="background:var(--bg-card); border:1px solid var(--border); border-radius:4px; padding:4px 10px; color:var(--text-primary); cursor:pointer; font-size:12px;"><i class="fa-solid fa-download"></i> 导出</button>
+        </div>
+      </div>
+
+      <!-- 三栏主体 -->
+      <div style="display:flex; flex:1; gap:10px; margin:10px 14px 14px; min-height:0; overflow:hidden;">
+        <!-- 左：Agent日志树 (20%) -->
+        <aside class="glass" style="width:20%; min-width:180px; padding:12px; overflow-y:auto;">
+          <h3 style="font-size:15px; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+            <i class="fa-solid fa-sitemap" style="color:var(--accent);"></i> Agent日志树
+          </h3>
+          <div id="agent-tree">
+            <div style="color:var(--text-muted); font-size:12px;">加载中...</div>
+          </div>
+        </aside>
+
+        <!-- 中：主日志流 (55%) -->
+        <section class="glass" style="width:55%; display:flex; flex-direction:column; overflow:hidden;">
+          <div style="padding:10px 14px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between;">
+            <h3 style="font-size:15px; font-weight:600; display:flex; align-items:center; gap:6px;">
+              <i class="fa-solid fa-list-alt" style="color:var(--accent);"></i> 日志流
+            </h3>
+            <span style="font-size:12px; color:var(--text-muted);" id="log-count">共 0 条日志</span>
+          </div>
+          <div style="flex:1; overflow-y:auto; padding:8px 12px;" id="turn-log-stream">
+            <div style="padding:32px; text-align:center; color:var(--text-muted);">等待日志数据...</div>
+          </div>
+        </section>
+
+        <!-- 右：日志详情 (25%) -->
+        <aside class="glass" style="width:25%; min-width:220px; padding:12px; overflow-y:auto;" id="log-detail-panel">
+          <h3 style="font-size:15px; font-weight:600; margin-bottom:10px; display:flex; align-items:center; gap:6px;">
+            <i class="fa-solid fa-circle-info" style="color:var(--accent);"></i> 日志详情
+          </h3>
+          <div style="color:var(--text-muted); text-align:center; font-size:13px;">选择一条日志查看详情</div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- Events Tab -->
+    <div class="tab-panel" id="panel-events" style="flex-direction:column;">
+      <!-- 控制栏 -->
+      <div class="ev-toolbar">
+        <span style="font-size:12px; color:var(--text-muted);">事件 <b id="ev-count">0</b></span>
+        <button id="ev-pause-btn" class="ev-btn" title="暂停/继续" onclick="EventStream._togglePause()">⏸</button>
+        <button id="ev-clear-btn" class="ev-btn" title="清空" onclick="EventStream._events=[];EventStream._render()">✕</button>
+        <div class="ev-sep"></div>
+        <span style="font-size:11px; color:var(--text-muted);">类别:</span>
+        <label class="ev-cat-label"><input type="checkbox" checked id="ev-cat-thinking" onchange="EventStream._onFilterChange()"> <span class="ev-cat ev-cat-think">思考</span></label>
+        <label class="ev-cat-label"><input type="checkbox" checked id="ev-cat-tool" onchange="EventStream._onFilterChange()"> <span class="ev-cat ev-cat-tool">工具</span></label>
+        <label class="ev-cat-label"><input type="checkbox" checked id="ev-cat-handoff" onchange="EventStream._onFilterChange()"> <span class="ev-cat ev-cat-handoff">交互</span></label>
+        <label class="ev-cat-label"><input type="checkbox" checked id="ev-cat-response" onchange="EventStream._onFilterChange()"> <span class="ev-cat ev-cat-resp">输出</span></label>
+        <label class="ev-cat-label"><input type="checkbox" checked id="ev-cat-system" onchange="EventStream._onFilterChange()"> <span class="ev-cat ev-cat-sys">系统</span></label>
+        <div class="ev-sep"></div>
+        <button id="ev-errors-btn" class="ev-btn" onclick="EventStream._toggleErrorsOnly()">⚠ 仅错误</button>
+        <button id="ev-starred-btn" class="ev-btn" onclick="EventStream._toggleStarredOnly()">⭐ 仅关注</button>
+        <div class="ev-sep"></div>
+        <div class="ev-agent-filter-wrap">
+          <button id="ev-agent-dropdown-btn" class="ev-btn" onclick="EventStream._toggleAgentDropdown()">🔽 Agent</button>
+          <div id="ev-agent-dropdown" class="ev-agent-dropdown" style="display:none;">
+            <div style="padding:4px 8px; border-bottom:1px solid var(--border);">
+              <input type="text" id="ev-agent-search" placeholder="搜索Agent..." style="width:100%; background:var(--bg-secondary); border:1px solid var(--border); color:var(--text-primary); padding:2px 6px; border-radius:3px; font-size:11px;" oninput="EventStream._searchAgents()">
+            </div>
+            <div id="ev-agent-list" style="max-height:300px; overflow-y:auto;"></div>
+          </div>
+        </div>
+      </div>
+      <!-- 事件列表 -->
+      <div id="ev-stream-inner" style="flex:1; overflow-y:auto; padding:4px 0; font-family:var(--font-mono);">
+        <div class="ev-empty">等待事件...</div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Scripts: order matters — util + constants must load first -->
+<script src="/js/util.js?v=5"></script>
+<script src="/js/constants.js?v=5"></script>
+<script src="/js/toast.js"></script>
+<script src="/js/charts.js?v=6"></script>
+<script src="/js/list-view.js"></script>
+<script src="/js/node-detail.js"></script>
+<script src="/js/event-stream.js?v=5"></script>
+<script src="/js/tree-layout.js"></script>
+<script src="/js/tree-view.js"></script>
+<script src="/js/tree-list-view.js?v=5"></script>
+<script src="/js/token-dashboard.js?v=1"></script>
+<script src="/js/chat-wechat.js?v=2"></script>
+<script src="/js/tasks.js?v=4"></script>
+<script src="/js/log-viewer.js?v=6"></script>
+<script src="/js/app.js?v=6"></script>
+</body>
+</html>

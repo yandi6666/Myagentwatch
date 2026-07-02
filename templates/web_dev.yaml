@@ -1,0 +1,31 @@
+# Web 开发团队模板
+template: web_dev
+display_name: "Web 开发监控"
+
+agent_meta:
+  "plan":
+    display_name: "技术负责人"
+    group: "架构与决策层"
+    color: "#3b82f6"
+  "build":
+    display_name: "前端开发"
+    group: "前端层"
+    color: "#22c55e"
+  "explore":
+    display_name: "代码审查"
+    group: "质量保证层"
+    color: "#f59e0b"
+
+alert_rules:
+  - name: "build_failure"
+    description: "构建失败率过高"
+    metric: "tool_failure_pct"
+    condition: ">"
+    threshold: 10
+    level: "critical"
+  - name: "review_backlog"
+    description: "审查积压提醒"
+    metric: "last_seen_delta"
+    condition: ">"
+    threshold: 7200
+    level: "warn"

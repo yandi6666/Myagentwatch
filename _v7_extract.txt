@@ -1,0 +1,1270 @@
+[Normal] MyAgentWatch
+
+[Normal] 多 Agent 实时监控仪表盘
+
+[Normal] 打破 AI Agent 黑盒 —— 实时追踪全链路行为与成本
+
+[Normal] 版本 2.1    |    2026 年 6 月
+
+[Normal] Python 3.12  ·  Flask  ·  SocketIO  ·  SQLite  ·  Chart.js
+
+[Normal] 面向：量化交易 AI 团队  |  通用 AI 开发团队
+
+[Heading 1] 一、项目背景：为什么需要 MyAgentWatch？
+
+[Heading 2] 1.1 行业趋势：AI Agent 正在成为开发团队的标准配置
+
+[Normal] 2025 年以来，以 Claude Code、OpenCode、Codex、Cursor、Gemini CLI 为代表的 AI 编程 Agent 迅速普及。越来越多的团队将 Agent 深度集成到日常开发流程中——代码生成、需求分析、架构设计、测试编写、Bug 修复。在量化交易等高频决策场景，AI Agent 还承担策略研究、因子挖掘、回测分析等关键任务。Agent 已经从「辅助工具」演变为「虚拟团队成员」，其运行状态、决策质量和资源消耗直接影响项目进度和成本。
+
+[Heading 2] 1.2 三大核心痛点
+
+[Normal] 痛点一：Agent 间通信是黑盒——你看不到 Agent 之间说了什么
+
+[Normal] 以一个真实的多 Agent 协作场景为例：OpenClaw 是一款通用 AI Agent 编排框架（类似 AI 团队的「项目经理」），OpenCode 是一款专注于终端编程的 AI Agent（类似 AI 团队的「程序员」）。典型工作流是：用户给 OpenClaw 下达任务 → OpenClaw 分析后将编码部分委托给 OpenCode → OpenCode 完成编码把结果返回给 OpenClaw → OpenClaw 汇总呈现给用户。
+
+[Normal] ▎ Before（使用 MyAgentWatch 之前）—— 用户视角：
+
+[Normal] ● 用户在 OpenClaw 的聊天界面中说：「帮我写一个 Flask REST API」
+
+[Normal] ● OpenClaw 内部通过 ACP（Agent Communication Protocol，JSON-RPC 2.0 over NDJSON 子进程协议）启动了一个 OpenCode 子进程
+
+[Normal] ● OpenClaw 向 OpenCode 发送了编码指令，但这是底层 IPC 通信——用户完全看不到指令内容
+
+[Normal] ● OpenCode 开始读文件、写代码、跑测试，整个过程在终端子进程中静默执行
+
+[Normal] ● OpenCode 完成后返回结果给 OpenClaw，OpenClaw 用自己的语言复述结果给用户
+
+[Normal] ● 用户的困惑：OpenClaw 到底让 OpenCode 做了什么？指令是否准确？OpenCode 有没有误解？OpenCode 报了什么错？OpenClaw 有没有篡改/简化 OpenCode 的输出？全部不可见
+
+[Normal] ● 更糟的是：如果 OpenCode 陷入死循环（反复读同一个文件）、调用了错误的工具、或者返回了错误的结果，用户在 OpenClaw 界面完全感知不到——只能看到 OpenClaw 说「处理好了」或「遇到了一些问题」
+
+[Normal] 
+▎ OpenCode 陷入死循环的真实代价：
+
+[Normal] 假设 OpenCode 在编写代码时遇到了一个它不理解的 import 错误。在没有监控的情况下，一个典型的死循环场景是这样的：
+
+[Normal] ● 第 1 轮：OpenCode 写入了一段有 bug 的代码 → 运行测试 → 失败 → 「让我看看错误信息」→ 读取错误日志
+
+[Normal] ● 第 2 轮：OpenCode 「我理解了，是 import 路径问题」→ 修改代码 → 运行测试 → 又失败 → 「不对，让我重新看看」→ 再次读取同一个文件
+
+[Normal] ● 第 3-8 轮：OpenCode 反复读同一个文件 → 反复猜测原因 → 反复修改 → 反复失败。每次循环消耗 8,000-15,000 input tokens + 2,000-5,000 output tokens
+
+[Normal] ● 第 9 轮：OpenCode 的思考开始退化（上下文窗口被无效信息填满）→ 「我建议回滚所有改动重来」→ 又开始新一轮循环
+
+[Normal] ● 最终结果：30 分钟后用户打开 OpenClaw，看到一条轻描淡写的「任务处理遇到一些困难，正在重试」。但实际上：
+    · 已消耗 380,000 input tokens（成本约 $1.14，按 Claude Sonnet 定价）
+    · 已消耗 95,000 output tokens（成本约 $0.57）
+    · 总共浪费 $1.71，耗时 30 分钟
+    · 源文件被反复修改了 12 次，git diff 显示大量无效改动
+    · 用户完全不知道这 30 分钟里发生了什么
+
+[Normal] ● 如果这个场景发生在凌晨 3 点的自动化任务中，团队第二天早上才会发现：任务没完成、Token 被刷掉了 $15+、代码仓库多了一堆需要回滚的提交
+
+[Normal] 
+这不是假设。在实际使用中，Claude Opus 4 单次请求可消耗高达 32,000 output tokens（约 $0.48），如果不加监控，一个循环 10 轮的 Agent 足以在一小时内烧掉 $5-15。对于同时运行 5 个 Agent 的量化交易团队，一天的死循环损失可能高达 $200。
+
+[Normal] 
+▎ 而有了 MyAgentWatch：
+
+[Normal] ● 当 OpenCode 第 3 次读取同一个文件时，告警规则 tool_failure_rate 或 agent_idle（反复执行无进展）触发橙色 blocked 状态
+
+[Normal] ● 用户实时收到通知：「OpenCode 在过去 5 分钟内读取了同一个文件 3 次，疑似死循环」
+
+[Normal] ● 用户在群聊中直接 @OpenCode 发送：「停止当前任务，换一种思路」——人工介入，打破循环
+
+[Normal] ● 或者用户查看 SSE 事件流，发现 OpenCode 的 thinking 内容越来越长、越来越混乱（上下文污染），直接通过 CLI 发送 heartbeat --status blocked 强制挂起 Agent
+
+[Normal] ● Token 仪表盘实时显示 OpenCode 的消耗曲线陡然上升，用户一眼就能发现异常
+
+[Normal] 
+这就是透明化的力量：不是阻止 Agent 犯错（Agent 必然会犯错），而是在犯错的第一时间让你知道，并给你干预的手段。
+
+[Normal] 
+这就像两个同事关上门在小房间里讨论，你只听到了最终「我们决定这样」的结论——中间的争论、纠错、方案变更你全都不知道。对于量化交易等关键场景，这种黑盒是不可接受的：你不知道一个交易策略是经过充分验证的还是草率决定的。
+
+[Normal] 
+▎ After（使用 MyAgentWatch 之后）—— 用户视角：
+
+[Normal] ● 用户同样对 OpenClaw 说：「帮我写一个 Flask REST API」
+
+[Normal] ● OpenClaw 通过 MyAgentWatch 的群聊系统，在群聊中 @OpenCode 并发送委托消息：「请帮我创建一个 Flask REST API，包含 GET /users 和 POST /users 两个端点，使用 SQLite 存储，代码风格遵循 PEP 8。」
+
+[Normal] ● 这条委托消息以紫色 Handoff 卡片的形式实时显示在群聊消息流中，清晰标注「OpenClaw → OpenCode / subagent_type: coding / 状态: running」
+
+[Normal] ● OpenCode 收到任务后，在群聊中回复自己的执行进展——thinking 消息（蓝色气泡·思考过程，如「先检查项目结构，确定在哪里添加路由文件」）、tool_call 消息（橙色框·工具调用，如「Bash: ls app/routes/」→ exit_code: 0）、response 消息（绿色气泡·代码输出结果）
+
+[Normal] ● 同时，SSE 事件流实时推送 OpenCode 的每一步操作：思考了 2.3 秒 → 调用了 read 工具读取 app.py → 调用了 write 工具写入 routes/users.py → 调用了 bash 工具运行 pytest → 测试全部通过 → 返回结果给 OpenClaw
+
+[Normal] ● OpenClaw 收到结果后，在群聊中用自己的话总结回复用户，同时把 OpenCode 的原始输出以绿色 Share 卡片形式分享到群聊
+
+[Normal] ● 整个过程完整记录：谁委托了谁、委托了什么、子 Agent 怎么做的、每一步的 Token 消耗和耗时、最终结果是什么——全部可追溯、可审计
+
+[Normal] 
+这就是 MyAgentWatch 群聊系统作为「Agent 间通信总线」的核心价值：让 Agent 之间的每一次对话、每一次委托、每一次交接都透明可见。团队可以在事后回放任意一次多 Agent 协作的全过程，就像查看 Slack 频道里的讨论记录一样自然。
+
+[Heading 2] 1.3 MyAgentWatch 的答案：Agent 通信基础设施
+
+[Normal] MyAgentWatch 不仅是一个监控仪表盘，更是一套 Agent 之间的通信基础设施。它的群聊系统实际上充当了 Agent 间通信的统一消息总线：
+
+沟通语言可指定 —— Agent 之间的所有通信必须通过群聊消息，用户可以要求 Agent 使用中文或英文进行对话。比如在量化交易场景，用户要求「所有 Agent 间通信必须使用中文」，则 OpenClaw 给 OpenCode 的委托指令必须是中文，OpenCode 的回复也必须是中文。这让非技术团队成员也能看懂 Agent 之间在讨论什么。
+
+消息类型区分 —— 普通消息（灰色气泡）、工具调用（橙色边框）、Agent 交接（紫色边框）、成果分享（绿色边框），不同颜色和边框样式让用户一眼就能分辨消息性质，快速定位关键信息。
+
+完全可追溯 —— 所有 Agent 间通信持久化存储在 conversation_turns + turn_content + agent_handoffs 三张表中，天然键 natural_key 去重保证数据完整。用户可以按 trace_id 回放任意一次多 Agent 协作的完整链路。
+
+Token 成本归属 —— 每条委托消息关联具体的 turn_id，Token 消耗精确归属到发起任务的 Agent。你可以明确知道「OpenClaw 委托 OpenCode 执行的任务，消耗了 45,000 input tokens + 12,000 output tokens，成本 $0.38」。
+
+[Heading 2] 1.4 三大核心痛点（续）
+
+[Normal] 痛点二：Token 成本失控——团队不知道钱花在哪
+
+[Normal] 一个中型开发团队每天可能消耗数百万 Token。不同模型（Claude Opus vs DeepSeek V4 vs GLM-5）价差可达 50 倍以上。不同 Agent 类型消耗差异巨大（plan 层通常消耗远高于 build 层）。不同时段（业务高峰期 vs 深夜）消耗不均衡。没有任何工具能告诉团队：「今天花了多少钱？哪个 Agent 最费钱？缓存命中率是多少？有没有模型没用定价？」
+
+[Normal] 痛点三：缺乏运维保障——Agent 停了都没人知道
+
+[Normal] Agent 进程可能因为各种原因挂掉：API 限流、Token 耗尽、内存溢出、数据源连接断开。传统 APM 工具（如 Grafana、Datadog）无法感知 AI Agent 的专属指标：心跳、模型状态、工具调用成功率、缓存效率。当 Agent 在凌晨 3 点自动化任务中宕掉，团队要等到第二天才发现，浪费大量计算资源和时间窗口。
+
+[Heading 1] 二、项目概述
+
+[Heading 2] 2.1 MyAgentWatch 是什么？
+
+[Normal] MyAgentWatch 是一款开源的、自托管的 AI Agent 实时监控与协作平台。它以适配器模式自动接入各类 AI Agent CLI （Claude Code、OpenCode 及兼容工具），通过采集 SQLite 数据库和日志文件，提供从 Token 消耗、工具调用、会话链路到系统资源的全维度可视化仪表盘。同时内置 Agent 群聊社交系统、SSE 实时事件流、告警规则引擎和 CLI 命令行客户端，让团队能够透明化地管理 AI 工作负载。
+
+[Heading 2] 2.2 核心价值主张
+
+[Normal] 「让你像管理微服务一样管理你的 AI Agent 团队」
+
+[Normal] ● 黑盒透明化 —— 自动发现并实时展示每个 Agent 的思考过程、工具调用和输出结果
+
+[Normal] ● 全维度成本管控 —— 8 家厂商 37 个模型定价，按 Agent / 模型 / 小时 / 会话四级拆解
+
+[Normal] ● 实时协作 —— Agent 之间自由聊天、交接任务、分享成果，微信风格群聊界面
+
+[Normal] ● 生产级运维 —— CPU / 内存 / 磁盘监控 + 5 状态机 + 告警规则引擎 + 日志归档
+
+[Normal] ● 零配置启动 —— 无 config.yaml 时自动扫描默认路径，自动发现所有 Agent
+
+[Normal] ● 极低部署成本 —— SQLite 单文件数据库，Docker 一键部署，不依赖外部服务
+
+[Heading 2] 2.3 关键数据
+
+[Normal] 支持的 AI 厂商：8 家（OpenAI / Anthropic / Google / DeepSeek / 阿里 / 月之暗面 / 智谱 / 字节）
+
+[Normal] 定价模型覆盖：37 个模型
+
+[Normal] API 端点：40+ 个 REST 端点 + 7 个 WebSocket 事件 + SSE 实时流
+
+[Normal] CLI 命令：11 个
+
+[Normal] 采集周期：5 秒（可配置）
+
+[Normal] 数据库：SQLite 单文件（零运维）
+
+[Heading 2] 2.4 适用场景
+
+[Normal] ● 量化交易团队 —— 监控多个 AI Agent 并行执行策略研究和因子挖掘任务
+
+[Normal] ● 软件开发团队 —— 追踪 Claude Code / OpenCode Agent 的编码活动和 Token 成本
+
+[Normal] ● AI 初创公司 —— 向客户展示 AI Agent 运行透明度和成本控制能力
+
+[Normal] ● 个人开发者 —— 在本地监控自己的 AI 编程助手，了解使用习惯和花费
+
+[Heading 1] 三、技术栈与选型理由
+
+[Heading 2] 3.1 整体技术架构
+
+[Heading 2] 3.2 为什么选择 SQLite 而不是 PostgreSQL？
+
+[Normal] MyAgentWatch 定位为轻量级自托管工具。SQLite 的优势在于：（1）零部署——不需要独立数据库进程，一个文件即完整数据库；（2）并发足够——AI Agent 团队通常 3-10 个 Agent，SQLite WAL 模式下轻松应对；（3）备份简单——cp 一个文件即完成备份；（4）嵌入式友好——未来可打包为单个二进制。当用户量或 Agent 数量扩展到 50+ 时，可平滑迁移至 PostgreSQL。
+
+[Heading 2] 3.3 为什么需要两份 SQLite 数据库？
+
+[Normal] MyAgentWatch 采用「源库只读 + 聚合库读写」的双库设计。opencode.db 属于 OpenCode CLI 的内部数据，MyAgentWatch 仅以只读方式挂载，绝不修改源数据。所有聚合统计、告警记录、聊天消息、用户令牌等自有数据，存入独立的 myagentwatch.db。这样既保证了源数据安全，又实现了职责分离——源库升级或更换不影响监控数据。
+
+[Heading 1] 四、系统架构设计
+
+[Heading 2] 4.1 整体架构：四层模型
+
+[Normal] MyAgentWatch 采用经典的四层架构，从上到下依次为：
+第一层 · 展示层 —— 浏览器 SPA + CLI 终端，负责数据可视化和用户交互
+第二层 · API 层 —— Flask REST API + WebSocket + SSE，负责请求路由和实时推送
+第三层 · 业务层 —— 采集调度器 + 状态机 + 告警引擎 + 事件总线 + 聊天系统，核心业务逻辑
+第四层 · 数据层 —— 源数据库（只读）+ 聚合数据库（读写）+ 日志归档，数据持久化
+
+[Heading 2] 4.2 数据采集：适配器模式
+
+[Normal] MyAgentWatch 的核心设计模式是适配器模式（Adapter Pattern）。所有数据源实现统一的 SourceInterface 抽象基类，通过 @register_source 装饰器注册到 SOURCE_REGISTRY。新增数据源只需在 config.yaml 中添加一行配置，Collector 自动发现并实例化对应的适配器，无需修改一行核心代码。
+
+[Normal] SourceInterface 要求每个适配器实现三个方法：
+
+[Normal] ● discover_agents() → List[Agent]  —— 自动扫描数据源，发现新 Agent
+
+[Normal] ● collect(since_timestamp) → CollectedData  —— 增量采集，返回自上次同步以来的新数据
+
+[Normal] ● health_check() → Dict  —— 检查数据源自身是否健康（连接正常、数据可读）
+
+[Normal] 
+目前已实现的数据源适配器：
+
+[Heading 2] 4.3 Agent 状态机：5 状态 + 精准判定
+
+[Normal] MyAgentWatch 实现了业界最精细的 Agent 状态模型（6 种状态），远超 Multica 的简单 4 状态模型。状态判定综合考虑三个信号源：主动心跳（heartbeat）、活动日志（activity_log）、源数据发现时间戳（last_seen_time），取 max(三者) 作为 actual_last，避免单一信号源失效导致误判。
+
+[Normal] 
+状态机关键设计决策：
+
+[Normal] ● 心跳优先 —— 有心跳的 Agent 使用显式心跳时间；无心跳的旧版 Agent 回退到 activity_log
+
+[Normal] ● offline 严格判定 —— 仅当 heartbeat 是最新信号时才将深度超时判为 offline，避免数据源发现时间戳干扰
+
+[Normal] ● 永不删除 —— Agent 不会因为离线被删除，只有从所有数据源中移除才会消失
+
+[Normal] ● 状态追溯 —— status_since 字段记录进入当前状态的时间戳，metadata 中存储 status_reason
+
+[Heading 2] 4.4 事件驱动：双通道实时推送
+
+[Normal] MyAgentWatch 设计了双通道推送架构，区分结构化数据和非结构化事件流：
+
+WebSocket 通道（Flask-SocketIO）：
+• 承载结构化数据：Agent 状态变更（agent_update）、仪表盘统计卡片（stat_snapshot）、流程图增量（flow_update）、告警事件（alert_event）
+• 推送策略：增量更新 2 秒一次（仅推送变化的数据），全量快照 10 秒一次（保证最终一致性），新 WebSocket 连接即时推送当前快照
+• 房间机制：每个数据源对应一个 SocketIO room，客户端按需订阅
+
+SSE 通道（Server-Sent Events）：
+• 承载文本内容流：thinking（思考过程）、tool_call（工具调用详情）、response（输出文本）、handoff（Agent 交接）
+• 单向推送：服务端 → 客户端，无需客户端回复，天然适合事件展示
+• 自动重连：浏览器原生 EventSource API 内置断线重连机制
+
+关键优化：socketio.emit 调用在后台线程池中执行，不阻塞 Flask HTTP 响应主线程。避免了一个慢客户端拖慢整个系统的经典问题。
+
+[Heading 2] 4.5 项目完整目录结构
+
+[Normal] myagentwatch/                          # ← 主项目根目录
+├── app.py                              # Flask + SocketIO 应用入口
+├── config.yaml                         # 用户配置文件（数据源、告警规则、模板选择）
+├── requirements.txt                    # Python 依赖清单
+├── check.py                            # 健康检查脚本
+├── Dockerfile                          # Docker 镜像构建
+├── docker-compose.yml                  # 一键部署编排
+├── MyAgentWatch-架构方案.md             # 架构设计文档
+├── MyAgentWatch-2.0-架构方案.md         # 2.0 升级方案
+│
+├── myagentwatch/                       # Python 包（核心业务逻辑）
+│   ├── db.py                           # 数据库管理：16 张表建表、迁移、连接池
+│   ├── config.py                       # 配置加载：YAML 解析 + 默认值 + 模板引擎 + 路径展开
+│   ├── collector.py                    # 采集调度器（866 行核心文件）
+│   │   · Collector 类：数据源初始化、collect_all() 主循环
+│   │   · _mark_stale_agents()：6 状态机判定（3 信号源综合）
+│   │   · _persist_data()：message/part/tool_call 三表并行写入
+│   │   · _persist_turns()：对话 Turn 去重批量写入（executemany）
+│   │   · _aggregate_daily_stats()：日聚合（每天一次，非每 2s）
+│   │   · _publish_events()：Part 级事件发布到 SSE EventBus
+│   │   · _archive_and_cleanup()：gzip 归档 + 超期删除 + VACUUM
+│   │   · _build_relationships()：会话 parent→child 构建 Agent 关系图
+│   ├── pricing.py                      # 定价模型：8 厂商 37 模型（含 DeepSeek/Qwen/Kimi/GLM/豆包）
+│   ├── user.py                         # 用户管理：PAT 令牌生成/验证、SHA-256 哈希、myaw_ 前缀
+│   ├── alerting.py                     # 告警规则引擎：config 驱动、阈值比较、alert 持久化
+│   ├── event_bus.py                    # SSE 事件总线：publish/subscribe、分类过滤
+│   ├── queries.py                      # 聚合查询：dashboard/by-agent/by-hour/by-model
+│   ├── log_compiler.py                 # 对话日志编译器：Turn → ContentBlock 结构化
+│   │
+│   ├── sources/                        # 数据源适配器包
+│   │   ├── __init__.py                 # SOURCE_REGISTRY + @register_source 装饰器
+│   │   ├── base.py                     # SourceInterface 抽象基类 + CollectedData 数据类
+│   │   ├── opencode_db.py              # OpenCode SQLite 适配器
+│   │   ├── opencode_log.py             # OpenCode 日志文件适配器
+│   │   ├── claude_code.py              # Claude Code 日志适配器（text block 补丁）
+│   │   ├── sqlite_agent.py             # 通用 SQLite Agent 适配器
+│   │   ├── log_adapter.py              # LogAdapter 接口（parse_turns）
+│   │   └── system.py                   # 系统资源适配器（psutil）
+│   │
+│   ├── routes/                         # Flask Blueprint 路由
+│   │   ├── api.py                      # REST API：40+ 端点（agents/sessions/stats/tokens/timeline/alerts/pricing...）
+│   │   └── chat_api.py                 # 聊天 API：消息 CRUD、好友请求、任务分享、_emit_async 后台推送
+│   │
+│   └── templates/                      # 行业模板
+│       ├── template_engine.py          # 模板加载 + 深度合并引擎
+│       ├── default.yaml                # 默认模板
+│       ├── quant_trading.yaml          # 量化交易行业模板
+│       └── web_dev.yaml                # Web 开发行业模板
+│
+├── static/                             # 前端静态资源（SPA 单页应用）
+│   ├── index.html                      # 入口 HTML（深色主题）
+│   ├── css/
+│   │   ├── dashboard.css               # 仪表盘样式（#1a1a2e 深色背景 + #16213e 卡片）
+│   │   ├── chat-wechat.css             # 群聊 + 事件流 + Token + 收件箱 全部样式
+│   │   └── log-viewer.css              # 日志查看器样式（彩色编码行）
+│   └── js/
+│       ├── app.js                      # 主入口：路由管理、全局状态、WebSocket 连接
+│       ├── chat-wechat.js              # 微信风格三栏群聊（消息去重 + 富媒体气泡）
+│       ├── event-stream.js             # SSE 事件流（Agent 筛选 + 类别 checkbox + 星标 + 展开详情）
+│       ├── token-dashboard.js          # Token 仪表盘（柱状图 + 双表 + 趋势图 + 未映射诊断）
+│       ├── topology.js                 # dagre + d3.js DAG 交互拓扑图
+│       ├── tree-view.js                # 会话树形视图（展开/折叠 + 点击详情）
+│       ├── tree-layout.js              # 树形布局算法
+│       ├── tree-list-view.js           # 树形列表混合视图
+│       ├── list-view.js                # 扁平列表视图
+│       ├── log-viewer.js               # 日志查看器（过滤 + 搜索 + 彩色编码）
+│       ├── node-detail.js              # 节点详情抽屉面板
+│       ├── charts.js                   # Chart.js 图表封装（柱状图/折线图/趋势图）
+│       ├── constants.js                # 常量定义（颜色映射、状态枚举、事件类型）
+│       ├── util.js                     # 工具函数（时间格式化、数字缩写、防抖节流）
+│       └── toast.js                    # Toast 通知组件（成功/错误/警告/信息）
+│
+├── templates/                          # 独立模板目录
+│   ├── default.yaml
+│   ├── quant_trading.yaml
+│   └── web_dev.yaml
+│
+├── changelog/                          # 开发日志（按日记录）
+│   ├── 2026-05-15.md ~ 2026-06-03.md
+│
+└── data/                               # 运行时数据（自动创建）
+    ├── myagentwatch.db                 # 聚合数据库
+    └── archive/                        # 日志归档（gzip JSONL）
+
+[Heading 1] 五、核心功能详解
+
+[Heading 2] 5.1 Token 用量仪表盘 —— 省钱的第一道防线
+
+[Normal] Token 成本是 AI Agent 团队最大的运营支出。一个 5 人团队使用 Claude Opus 做代码生成，每月可能产生 $200-$500 的 Token 费用。MyAgentWatch 的 Token 仪表盘让每一分钱都清楚可见。
+
+[Normal] 功能要点：
+
+[Normal] ● 五级 Token 拆解 —— input（输入消耗）/ output（输出生成）/ reasoning（思考链消耗）/ cache_read（缓存命中读取）/ cache_write（缓存写入），比业界常见的三级拆解更精细
+
+[Normal] ● 五种查询维度 —— dashboard（总览）/ by-agent（按 Agent 聚合）/ by-model（按模型聚合）/ by-hour（按小时趋势）/ unmapped（未定价模型诊断，帮助发现配置遗漏）
+
+[Normal] ● 8 家厂商 37 个模型完整定价 —— 国际：OpenAI (GPT-4o/4.1/o3)、Anthropic (Claude Opus/Sonnet/Haiku)、Google (Gemini)；国内：DeepSeek (V3/V4/R1)、阿里 (Qwen)、月之暗面 (Kimi)、智谱 (GLM)、字节 (豆包)
+
+[Normal] ● 前端三视图 —— 柱状图（按 Agent 和模型对比）、双数据表（详细用量 + 成本排序）、趋势折线图（按小时查看消耗波动）、未映射诊断面板（高亮显示缺少定价的模型）
+
+[Normal] ● 日聚合预计算 —— daily_stats 表每天聚合一次（非实时计算），避免每次 API 请求扫描全量 token_records
+
+[Heading 2] 5.2 SSE 实时事件流 —— Agent 的「直播画面」
+
+[Normal] 事件流是 MyAgentWatch 最具特色的功能之一。它将 Agent 的内部工作过程以彩色编码的实时流形式展现，让开发者像看直播一样观察 Agent 的思考、决策和执行。
+
+[Normal] 功能要点：
+
+[Normal] ● 四种事件类型 —— thinking（蓝色·Agent 的思考推理过程）、tool_call（橙色·工具调用的名称/参数/耗时/退出码）、response（绿色·Agent 的文本输出）、handoff（紫色·子 Agent 交接事件）
+
+[Normal] ● 自动启动 —— 页面加载即连接 SSE（DOMContentLoaded 事件触发），不等用户切换到事件流 tab。tab 切换不断开连接，页面关闭才释放。这是 5 月 30 日根据用户反馈修复的关键 UX 问题
+
+[Normal] ● 强大的筛选能力 —— 按 Agent 分组下拉选择 + 按事件类别 checkbox 勾选 + 星标收藏 + 「仅显示错误」一键过滤
+
+[Normal] ● 详情展开 —— 点击任意事件行，下方展开详情面板，以 <pre> 标签展示完整文本内容（thinking 可能数千字），支持滚动查看
+
+[Normal] ● 操控面板 —— 暂停/恢复推送 + 一键清空列表
+
+[Normal] ● 技术实现 —— 后端 EventBus (event_bus.py) 在 collector 每轮采集后批量 publish Part 级事件；前端 EventSource API 接收，每个事件分配唯一 ID 用于去重
+
+[Heading 2] 5.3 Agent 群聊 —— 微信风格的 Agent 社交系统
+
+[Normal] 6 月 1 日全新重做的群聊系统，采用微信桌面版的三栏布局，让 Agent 之间的沟通像微信一样自然。这是 MyAgentWatch 相比 Multica 等竞品最重要的差异化功能——Multica 完全没有 Agent 社交能力。
+
+[Normal] 三栏布局详解：
+
+[Normal] ● 左栏 · 会话列表（宽度 ~280px）—— 圆形头像 + 在线绿点 + 最后一条消息预览（截断） + 红点未读计数 + 相对时间戳（刚刚/5分钟前/昨天）
+
+[Normal] ● 中栏 · 消息流（弹性宽度）—— 人类消息：蓝色气泡靠右对齐 / Agent 消息：灰色气泡靠左对齐。富媒体消息类型：tool_call 橙色边框卡片（显示工具名+参数摘要）、handoff 紫色边框卡片（显示交接双方+子Agent类型）、share 绿色边框卡片（显示任务标题+结果摘要）
+
+[Normal] ● 右栏 · Agent 详情（宽度 ~300px）—— 上方：选中的 Agent 信息卡片（头像 + 显示名称 + 模型ID + 数据来源 + Token 消耗统计）。下方：通讯录列表（按 group_name 分组 + 在线绿点；active/idle/working 三种状态均视为在线）
+
+[Normal] 
+技术要点：
+
+[Normal] ● 消息去重 —— 基于 natural_key 在数据库层面 UNIQUE 约束 + 内存 set 双重去重
+
+[Normal] ● 实时推送 —— chat_api 的 _emit_async 函数将 socketio.emit 提交到 ThreadPoolExecutor，不阻塞 HTTP 响应
+
+[Normal] ● 旧代码清零 —— 重做时完全移除旧版聊天代码，不留兼容包袱
+
+[Heading 2] 5.4 通知收件箱 —— 不遗漏任何重要信息
+
+[Normal] 顶部导航栏铃铛图标 + 红色未读数字徽章。系统自动生成三类通知并写入 inbox 表：
+
+[Normal] ● Agent 消息 —— 当有 Agent 在群聊中 @你或向你发送消息时触发
+
+[Normal] ● 好友请求 —— 当其他 Agent 发起好友申请时触发
+
+[Normal] ● 告警触发 —— 当告警规则被触发（如 tool_failure_rate > 20%）时自动生成通知
+
+[Normal] ● 一键全部标记已读 + 单条标记已读
+
+[Heading 2] 5.5 告警规则引擎 —— 主动发现问题
+
+[Normal] 内置 4 条默认告警规则，全部通过 config.yaml 的 alert_rules 数组配置，支持热修改。告警触发后写入 alerts 表，同时在 WebSocket 推送 alert_event，前端可弹出 Toast 通知。
+
+[Heading 2] 5.6 PAT 令牌认证 —— 安全的 Agent 身份系统
+
+[Normal] MyAgentWatch 实现了完整的 PAT (Personal Access Token) 身份认证系统，用于 CLI 客户端和服务间通信。
+
+[Normal] ● 令牌格式 —— myaw_ 前缀（便于识别和审计）+ 40 位十六进制随机数
+
+[Normal] ● 存储安全 —— 数据库中仅存储 SHA-256 哈希值，明文令牌仅在生成时返回一次
+
+[Normal] ● 身份绑定 —— 每个令牌绑定到 specific agent_id，connect 时自动匹配 token_prefix 识别 Agent 名称
+
+[Normal] ● API 认证 —— 所有 /api/* 端点通过 Bearer Token 认证，前端页面免认证
+
+[Normal] ● 用户管理 —— 完整的 CRUD 端点：创建用户、生成令牌、列出用户、撤销令牌、删除用户
+
+[Heading 2] 5.7 性能优化历程（5 月 30 日）
+
+[Normal] 5 月 30 日进行了一次集中的性能审计和优化，以下 5 项改进将系统负载降低了约 80%：
+
+[Heading 1] 六、数据模型设计
+
+[Heading 2] 6.1 数据库概览
+
+[Normal] myagentwatch.db 包含 16 张核心数据表，按功能分为 5 个组：
+• 基础配置组：data_sources（数据源）、pricing（定价）、users（用户/令牌）
+• Agent 运行组：agents（Agent 注册）、agent_relationships（Agent 间调用关系）
+• 业务数据组：sessions（会话）、token_records（Token 记录）、tool_calls（工具调用）、activity_log（行为日志）
+• 对话分析组：conversation_turns（对话 Turn）、turn_content（Turn 内容块）、agent_handoffs（Agent 交接）
+• 运维管理组：daily_stats（日聚合）、alerts（告警）、health_checks（系统健康）、inbox（收件箱）
+
+[Heading 2] 6.2 核心表设计说明
+
+[Normal] agents 表 —— Agent 生命周期管理
+
+[Normal] ● 复合主键：agent_id = source_name + agent_name + model_id，支持同一 Agent 跨数据源区分
+
+[Normal] ● 配置增强：discover_agents() 自动发现后，与 config.yaml 的 agent_meta 合并 → display_name + group_name
+
+[Normal] ● 状态字段：status（当前状态）+ status_since（进入时间）+ metadata.status_reason（原因）
+
+[Normal] 
+token_records 表 —— Token 消费的完整审计日志
+
+[Normal] ● message 粒度：每条 message 生成一条记录（不是 part 粒度，因为 Token 数据在 message 级别）
+
+[Normal] ● 5 级 Token 字段：input / output / reasoning / cache_read / cache_write
+
+[Normal] ● 支持按 session_id / agent_id / model_id / timestamp 多维查询
+
+[Normal] 
+conversation_turns + turn_content —— 对话结构化存储
+
+[Normal] ● natural_key：业务主键（agent_id + session_id + seq），用于去重
+
+[Normal] ● 一对多关系：一个 Turn 可包含多个 ContentBlock（如思考块 + 工具调用块 + 输出文本块）
+
+[Normal] ● handoff_id：外键关联 agent_handoffs，追踪子 Agent 委托链
+
+[Normal] 
+agent_handoffs 表 —— Agent 委托链追踪
+
+[Normal] ● 记录完整交接信息：from_agent_id → to_agent_id，委托 prompt，返回 result
+
+[Normal] ● subagent_type：区分 Agent / Task / Subagent 不同类型
+
+[Normal] ● to_session_id：交接后在子 Agent 侧创建的新会话 ID
+
+[Heading 2] 6.3 定价模型表
+
+[Normal] pricing 表存储每个模型每百万 Token 的价格（美元）。支持字段：provider（厂商）、model_id（模型标识）、input_price（输入价格/百万Token）、output_price（输出价格/百万Token）、cache_price（缓存读写价格）。成本计算公式：cost = (tokens_input × input_price + tokens_output × output_price + tokens_reasoning × reasoning_price + cache_read × cache_price + cache_write × cache_price) / 1,000,000。
+
+[Heading 1] 七、API 设计
+
+[Heading 2] 7.1 REST API（40+ 端点）
+
+[Normal] MyAgentWatch 的 REST API 按资源分组，提供 JSON 格式响应。所有 /api/* 端点需要 Bearer Token 认证。
+
+[Heading 2] 7.2 WebSocket 事件
+
+[Heading 1] 八、CLI 客户端（myagentwatch-cli）
+
+[Heading 2] 8.1 设计理念
+
+[Normal] myagentwatch-cli 是一个独立的命令行客户端程序，与主项目分开维护、独立打包。设计目标是为 Agent 本身提供一种轻量级的、可脚本化的方式与 MyAgentWatch 服务端交互。纯 Python 标准库实现（urllib.request），零外部依赖，确保在任何 Python 3.10+ 环境可直接运行。
+
+[Heading 2] 8.2 项目结构
+
+[Normal] myagentwatch-cli/
+├── pyproject.toml                  # Python 包配置
+│   · name: myagentwatch-cli
+│   · version: 0.1.0
+│   · entry_point: myaw = myagentwatch_cli.cli:main
+│   · requires-python: >=3.10
+│   · build-system: setuptools
+├── config.json                     # 运行时配置（自动生成）
+│   · server: 服务端地址（如 http://127.0.0.1:10000）
+│   · key: PAT 令牌（如 myaw_ad7e21...）
+│   · agent_name: 自动识别的 Agent 名称
+│   · agent_id: 自动识别的 Agent ID
+└── myagentwatch_cli/
+    ├── __init__.py
+    ├── cli.py                      # 命令行入口（argparse 子命令 + 11 个命令实现）
+    └── client.py                   # HTTP 客户端（GET/POST/DELETE + Bearer 认证）
+
+[Heading 2] 8.3 client.py —— HTTP 通信层详解
+
+[Normal] client.py 是整个 CLI 的网络基础层，负责所有与 MyAgentWatch 服务端的 HTTP 通信。全部使用标准库 urllib.request 实现，不依赖 requests/httpx 等第三方库。
+
+[Normal] ● Bearer Token 认证 —— 所有请求自动添加 Authorization: Bearer <token> 请求头
+
+[Normal] ● URL 安全编码 —— urllib.parse.quote(path, safe="/?=&:%")，处理 Agent ID 中的空格和冒号
+
+[Normal] ● config.json 持久化 —— load_config() / save_config() 读写 JSON 配置文件，存储 server + key + agent_name + agent_id
+
+[Normal] ● connect() 自动身份识别 —— 连接后调用 GET /api/users，遍历用户列表匹配 token_prefix 找到对应的 agent_name 和 agent_id，更新 config.json
+
+[Normal] ● 超时和错误处理 —— 默认 30s 超时；HTTP 错误返回 JSON 解析结果；网络异常返回 {"error": str(e)}
+
+[Normal] ● 三个 HTTP 方法封装 —— get(path) / post(path, body) / delete(path)
+
+[Heading 2] 8.4 cli.py —— 命令行接口详解
+
+[Normal] cli.py 使用 Python 标准库 argparse 实现子命令模式。入口点 myaw（由 pyproject.toml 的 [project.scripts] 定义）。终端输出使用 ANSI 转义序列实现彩色文本和 Unicode 边框卡片。
+
+[Normal] ● ANSI 颜色映射 —— active=32(绿) / working=34(蓝) / idle=33(黄) / error=31(红) / blocked=35(紫) / offline=37(灰)
+
+[Normal] ● _box() 函数 —— 用 Unicode 字符绘制带标题的边框卡片（┌─┐│└─┘），自适应内容宽度
+
+[Normal] ● 每个命令对应一个 cmd_*() 函数，调用 client.py 的 get/post 方法，格式化输出
+
+[Heading 2] 8.5 11 个命令完整说明
+
+[Heading 2] 8.6 心跳守护模式详解
+
+[Normal] 守护模式（--daemon）是 CLI 的关键功能。并非所有 Agent CLI 都内置了向 MyAgentWatch 发送心跳的能力。通过启动一个后台守护进程，CLI 客户端可以代理这些 Agent 维持 active 状态。
+
+[Normal] ● 运行方式 —— myaw heartbeat --agent-id "..." --daemon
+
+[Normal] ● 心跳间隔 —— 固定 15 秒（在 while True 循环中 time.sleep(15)）
+
+[Normal] ● 停止方式 —— Ctrl+C（KeyboardInterrupt 捕获，优雅退出）
+
+[Normal] ● 适用场景 —— 监控不支持主动心跳的旧版 Agent CLI、监控第三方 Agent 工具、临时为某个 Agent 注入心跳
+
+[Heading 2] 8.7 安装与启动
+
+[Normal] # 方式一：从源码安装（推荐）
+cd myagentwatch-cli
+pip install -e .
+
+# 方式二：直接运行
+python -m myagentwatch_cli.cli status
+
+# 首次使用：连接服务端
+myaw connect --server http://localhost:10000 --key myaw_ad7e21...
+
+# 日常使用
+myaw status          # 查看仪表盘
+myaw tokens --days 7 # 查看本周 Token
+myaw chat "任务完成"  # 发送消息
+
+[Heading 1] 九、前端设计
+
+[Heading 2] 9.1 设计原则
+
+[Normal] ● 零构建工具链 —— CDN 引入 Chart.js / dagre / d3.js / socket.io-client，无需 npm/webpack/vite
+
+[Normal] ● 深色主题优先 —— 面向开发者群体，深色背景减少视觉疲劳，长时间监控更舒适
+
+[Normal] ● 响应式优先 —— SPA 单页应用，支持 PC / 平板 / 手机三种断点
+
+[Normal] ● 自动启动 —— 数据采集和 SSE 连接在 DOMContentLoaded 即启动，不等用户操作
+
+[Heading 2] 9.2 视觉设计规范
+
+[Heading 2] 9.3 8 个功能页面
+
+[Heading 2] 9.4 前端技术要点
+
+[Normal] ● 路由管理 —— 基于 window.location.hash 的轻量路由，不引入 Vue Router/React Router
+
+[Normal] ● 状态管理 —— 全局 appState 对象 + 事件触发式更新，不引入 Redux/Vuex
+
+[Normal] ● WebSocket 重连 —— socket.io 内置指数退避重连（1s → 2s → 4s → ... → 30s 上限）
+
+[Normal] ● SSE 重连 —— EventSource 浏览器原生自动重连（3s 间隔）
+
+[Normal] ● 消息去重 —— 两层去重：数据库 UNIQUE(natural_key) + 前端 Set<msg_id> 内存去重
+
+[Heading 1] 十、竞品对比：MyAgentWatch vs Multica
+
+[Heading 2] 10.1 Multica 简介
+
+[Normal] Multica 是目前市场上功能最完整的 Agent 管理平台之一。采用 Go 1.26 + PostgreSQL 17 + Redis + WebSocket + Next.js 16 技术栈，支持 11 种 Agent CLI（Claude Code、Codex、Copilot、Cursor、Gemini、Kimi 等）。架构分为 5 层：Agent Backend 抽象层 → 本地守护进程 → HTTP 处理程序 → 领域服务 → 实时系统。核心优势在于 Token 用量分析（多维切片）和完整的任务生命周期管理（queued→dispatched→running→completed/failed/cancelled）。
+
+[Heading 2] 10.2 功能对比矩阵
+
+[Heading 2] 10.3 MyAgentWatch 的差异化定位
+
+[Normal] MyAgentWatch 不与 Multica 正面竞争「任务编排」和「多 CLI 广度」。我们的核心差异化在于：
+
+1. Agent 社交（群聊 + 通讯录 + 好友 + 动态）—— Multica 完全没有的方向，为 Agent 之间的协作提供社交基础设施
+2. 运维监控（CPU/内存/磁盘 + 告警规则引擎）—— 填补 Multica 的系统资源监控空白
+3. 部署成本（SQLite 单文件 + pip install）—— 面向个人开发者和小团队，无需运维 PostgreSQL/Redis
+4. 事件流可视化（SSE 实时流 + 彩色编码 + 详情展开）—— 让 Agent 工作过程完全透明
+
+一句话总结：Multica 管任务，MyAgentWatch 管 Agent。
+
+[Heading 1] 十一、技术亮点与设计决策
+
+[Heading 2] 11.1 适配器模式 + 插件注册
+
+[Normal] 通过 @register_source 装饰器将数据源适配器注册到 SOURCE_REGISTRY 字典。在 config.yaml 中新增数据源只需一行 type 声明，Collector 自动查找注册表并实例化。新增数据源类型无需修改 collector.py、api.py、前端代码。真正做到「对扩展开放，对修改封闭」。
+
+[Heading 2] 11.2 双通道推送架构
+
+[Normal] 区分结构化数据（WebSocket）和非结构化事件流（SSE）是经过权衡的设计决策。WebSocket 适合双向小消息的增量同步，SSE 适合单向大文本的事件推送。两者互补而非竞争——如果只用 WebSocket 推大文本，会阻塞状态更新通道；如果只用 SSE 推结构数据，会失去双向交互能力。
+
+[Heading 2] 11.3 去重策略
+
+[Normal] ● conversation_turns：natural_key UNIQUE（DB层）+ 内存 Set 预查（应用层），双重去重
+
+[Normal] ● 聊天消息：消息 ID Set 内存去重，WebSocket 重复推送的包直接丢弃
+
+[Normal] ● Token 记录：INSERT OR IGNORE + message_id 唯一约束
+
+[Heading 2] 11.4 配置优先于硬编码
+
+[Normal] 整个系统贯彻「配置驱动」原则：数据源列表、Agent 元数据、告警规则、行业模板、轮询间隔、归档策略——全部可通过 config.yaml 修改，无需改代码。模板引擎支持按行业（量化交易 / Web 开发）一键切换预设配置。
+
+[Heading 2] 11.5 日志归档与自动清理
+
+[Normal] conversation_turns 数据量随时间线性增长。系统实现了自动生命周期管理：
+• log_archive_days（默认 7 天）：超过此天数的 Turn 导出为 gzip JSONL 归档（按年月分文件），从主表删除
+• log_retention_days（默认 365 天）：超过此天数的数据彻底删除
+• 归档/删除后自动 VACUUM，回收磁盘空间
+这使得 myagentwatch.db 的大小保持在可控范围，长期运行也不会磁盘告警。
+
+[Heading 1] 十二、路线图（2026 年 6 月）
+
+[Heading 2] 12.1 短期目标（6 月 10 日截止）
+
+[Heading 2] 12.2 中期规划（6-7 月）
+
+[Normal] ● 多语言前端 —— 支持中文/英文/日文界面切换
+
+[Normal] ● 移动端适配 —— PWA + 响应式优化，手机端完整操作体验
+
+[Normal] ● 插件市场 —— 第三方数据源适配器、告警规则模板、仪表盘 Widget
+
+[Normal] ● PostgreSQL 迁移工具 —— 为 50+ Agent 团队提供数据库升级路径
+
+[Heading 2] 12.3 不做的事情
+
+[Normal] 明确排除以下方向，保持项目聚焦：
+
+[Normal] ● Squad/小队管理 —— Multica 已做好，不做重复建设
+
+[Normal] ● Autopilot 自动执行 —— 安全风险高，保持「监控」定位
+
+[Normal] ● Electron 桌面客户端 —— Web + CLI 已足够，Electron 打包太重
+
+[Normal] ● 多工作区管理 —— 可通过多个 MyAgentWatch 实例组合实现
+
+[Heading 1] 十三、部署与运维
+
+[Heading 2] 13.1 Docker 部署（推荐）
+
+[Normal] 最简单的部署方式，适合有 Docker 环境的团队。通过卷挂载实现配置和数据持久化，源数据库以只读方式挂载保护数据安全。
+
+[Normal] # docker-compose.yml
+services:
+  myagentwatch:
+    build: .
+    ports:
+      - "10000:10000"                              # 映射到宿主机 10000 端口
+    volumes:
+      - ~/.local/share/opencode:/data/opencode:ro  # 源数据库：只读
+      - ./config.yaml:/app/config.yaml              # 配置文件
+      - ./data:/app/data                            # 聚合数据库 + 归档（读写）
+    restart: unless-stopped                         # 自动重启
+
+[Heading 2] 13.2 本地开发部署
+
+[Normal] # 1. 创建虚拟环境
+cd myagentwatch
+python -m venv .venv
+.venv\Scripts\activate    # Windows
+source .venv/bin/activate   # macOS/Linux
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 启动服务端（默认端口 10000）
+python app.py
+# 服务启动后访问 http://localhost:10000
+
+# 4. 健康检查
+python check.py
+
+[Heading 2] 13.3 CLI 客户端安装
+
+[Normal] # 安装 CLI
+cd myagentwatch-cli
+pip install -e .
+
+# 连接到已运行的服务端
+myaw connect --server http://localhost:10000 --key myaw_xxx
+
+# 日常使用
+myaw status        # 仪表盘
+myaw tokens        # Token 用量
+myaw agents        # Agent 列表
+myaw chat "hello"  # 发送消息
+
+[Heading 2] 13.4 配置说明
+
+[Normal] config.yaml 是系统的核心配置文件。所有配置项都有合理默认值，无此文件时系统使用默认配置自动扫描默认路径。以下为关键配置项说明：
+
+[Normal] ● data_sources —— 数据源列表，每项包含 name/type/db_path/log_dir/enabled。支持配置多个数据源同时监控
+
+[Normal] ● agent_meta —— 为自动发现的 Agent 设置 display_name（显示名称）和 group（分组），可空
+
+[Normal] ● alert_rules —— 告警规则数组，每项包含 name/metric/condition/threshold/level，支持热修改
+
+[Normal] ● poll_interval —— 采集间隔（秒），默认 5 秒
+
+[Normal] ● agent_stale_timeout —— Agent 超时阈值（秒），默认 300 秒，超过此值进入 idle 状态
+
+[Normal] ● log_archive_days —— 日志归档天数（默认 7），超过此天数的对话 Turn 导出为 gzip 归档
+
+[Normal] ● log_retention_days —— 日志保留天数（默认 365），超过此天数的数据彻底删除
+
+[Normal] ● template —— 行业模板选择（quant_trading / web_dev / default），模板会与用户配置深度合并
+
+[Heading 2] 13.5 运维要点
+
+[Normal] ● 数据库备份 —— 直接 cp myagentwatch.db 即可，SQLite 单文件零依赖备份
+
+[Normal] ● 磁盘空间监控 —— 关注 data/archive/ 目录大小，定期清理或增大 log_retention_days
+
+[Normal] ● 端口冲突 —— 默认 10000 端口，可在 Docker 或 app.py 启动参数中修改
+
+[Normal] ● 多实例部署 —— 每个 OpenCode 实例对应一个 MyAgentWatch 实例，通过不同端口隔离
+
+[Heading 1] 十四、答辩问题全景回答
+
+[Normal] 以下 149 个核心问答融合了两版内容：旧版 FAQ（33 问，详实叙述）和 GPT-5.5 答辩清单（405 问，25 板块）。前 9 个主题板块保留旧版的详细论证，后续板块覆盖答辩清单中新增的关键问题。
+
+[Heading 2] 14.1 产品定位
+
+[Normal] Q1：这个项目到底是「监控工具」还是「Agent 通信基础设施」？
+
+[Normal] 两者都是，但有主次。MyAgentWatch 的核心定位是 Agent Observability（可观测性平台），群聊系统是实现「Agent 间通信透明化」的手段，不是独立的 IM 产品。简单说：监控是目的，群聊是手段。如果去掉群聊 UI，项目仍然成立（API + 事件流 + Token 仪表盘本身就是完整的产品）；但如果去掉 Token 监控和事件流，只剩群聊，项目就不成立了。
+
+[Normal] Q2：为什么用户不直接用 Grafana + Langfuse + OpenTelemetry + Datadog + LangSmith 的组合？
+
+[Normal] 因为这些工具各自解决不同层面的问题，拼在一起有 3 个致命缺陷：
+（1）数据孤岛——Grafana 管指标、Langfuse 管 LLM tracing、Datadog 管基础设施，三者的数据无法关联。OpenClaw 委托 OpenCode 执行任务这件事，在 Grafana 里看到的是「CPU 正常」，在 Langfuse 里看到的是「API 调用成功」，但你无法把它们连成一条线说「OpenClaw 在第 5 轮把任务 handoff 给了 OpenCode，OpenCode 用了 45K tokens 完成了编码」——这正是 MyAgentWatch 的核心价值。
+（2）部署成本——Langfuse 需要 PostgreSQL + ClickHouse + Redis，Datadog 按主机收费，Grafana 需要配置数据源和仪表盘。一个小团队要搭起这套组合需要几小时到几天，而 MyAgentWatch 只需 docker-compose up。
+（3）AI 专属指标的缺失——传统工具没有 Agent 状态机、没有 handoff 链路追踪、没有 Token 按 Agent 拆解、没有 thinking 流可视化。它们是通用工具，MyAgentWatch 是垂直工具。
+
+[Normal] Q3：真正不可替代的能力是什么？
+
+[Normal] 三项能力在目前市场上没有直接替代品：
+（1）Agent 间通信的透明化——把 Agent 之间的 IPC/ACP 通信「翻译」成人类可读的群聊消息，这是目前所有竞品（Multica、LangSmith 等）都没有的能力。
+（2）Token 到 Agent 的精确成本归因——不是笼统的「今天花了 $20」，而是「OpenClaw 的 plan Agent 花了 $5.30（其中 $1.71 是委托给 OpenCode 的子任务）」。
+（3）Agent 状态机 + 告警——6 状态精细模型（比 Multica 多 working 状态），综合 heartbeat + activity_log + last_seen_time 三大信号源判定。
+
+[Normal] Q4：目标用户到底是谁？
+
+[Normal] ● 个人开发者（核心）：在本地监控自己的 AI 编程助手，了解 Token 消耗和 Agent 行为
+
+[Normal] ● 小团队（3-10 Agent，扩展目标）：多人多 Agent 的团队协作场景，群聊和通信透明化最有价值
+
+[Normal] ● AI 创业公司（未来）：向客户展示 Agent 运行的透明度和成本控制能力
+
+[Normal] ● 企业内部平台团队（远期）：作为内部 AgentOps 平台的基础设施
+
+[Normal] Q5：如果只能保留一个功能，保留什么？
+
+[Normal] Token 用量仪表盘。因为它是唯一直接关系到「钱」的功能。团队可能不在乎 Agent 怎么思考的，但一定在乎每个月花了多少 Token 费用、哪个 Agent/项目最费钱。这是对所有人都有价值的刚需。
+
+[Normal] Q6：你想做的是 Datadog for Agents、Slack for Agents，还是 Kubernetes for Agents？
+
+[Normal] Datadog for Agents 是最接近的类比——仪表盘、告警、成本分析、日志流一应俱全。Slack for Agents 是群聊的表达形式但不是本质。Kubernetes for Agents 是远期愿景（Agent 编排调度），但当前不做任务编排。
+
+[Normal] Q7：这个项目是给「人」用的，还是给「Agent」用的？
+
+[Normal] 给人用——人是最终消费者。但群聊的消息发送者是 Agent，所以 Agent 也是「用户」。更准确地说：人在监控 Agent，Agent 通过群聊互相通信，人可以通过群聊/CLI 干预 Agent。
+
+[Heading 2] 14.2 架构设计
+
+[Normal] Q8：SQLite WAL 模式下的真实并发上限是多少？50+ Agent 真的能迁移吗？
+
+[Normal] SQLite WAL 模式在 10 个 Agent 以下完全无压力（实测 5 Agent × 5s 采集 × 8 线程写入，每秒约 200-500 次 INSERT，WAL 模式下写入不阻塞读取）。50 Agent 时建议迁移 PostgreSQL，迁移成本可控：
+（1）所有 SQL 都是标准 SQL，无 ORM，迁移主要是改连接字符串和少量 SQL 方言差异（如日期函数）
+（2）提供 db.py 的 PostgreSQL 适配模块（已在路线图中），只需改一个 import
+（3）SQLite 和 PostgreSQL 可并行运行过渡期，逐步切换
+当前瓶颈不在 SQLite 本身，而在 collector.py 的单进程模型——如果未来需要水平扩展，需要把 collector 拆成独立服务。
+
+[Normal] Q9：双通道推送（WebSocket + SSE）如何保证一致性和避免重复推送？
+
+[Normal] 两个通道推送的内容在语义层面不重叠：WebSocket 推结构化状态变更（agent_update/stat_snapshot），SSE 推非结构化事件流（thinking/tool_call/response/handoff）。不存在「同一条数据从两个通道各推一次」的情况。
+端到端一致性策略为：前端以数据库为 source of truth。WebSocket 收到增量后立即更新 UI，但每 10s 拉一次全量快照校正。SSE 的事件流本质是追加日志，不需要和 WebSocket 一致。去重依靠数据库 UNIQUE(natural_key) + 前端 Set<msg_id> 双层保护。
+
+[Normal] Q10：collector.py 866 行，是否违反单一职责原则？未来要不要拆？
+
+[Normal] 承认这一点。866 行确实过长了。当前拆分方案已在计划中：
+（1）Collector 类保留调度编排职责（~200 行）
+（2）StateMachine 独立模块——_mark_stale_agents() 逻辑（~200 行）
+（3）TurnPersister 独立模块——_persist_turns() 逻辑（~200 行）
+（4）Archiver 独立模块——_archive_and_cleanup() 逻辑（~100 行）
+保留在单一文件中是因为项目尚在快速迭代期（从 5 月 15 日到 6 月 3 日每天都有 changelog），过早拆分会导致跨文件跳转成本。6 月 10 日任务系统 + Agent Backend 完成后即启动拆分。
+
+[Normal] Q11：为什么用 Flask + SocketIO 而不是 FastAPI + asyncio + Kafka？
+
+[Normal] 选择 Flask 的理由是务实而非教条：
+（1）项目启动时（2026-05），团队最熟悉 Flask 生态，FastAPI 的 async 优势在 SQLite 同步 IO 背景下无法发挥
+（2）Flask-SocketIO 是生态中最成熟的 Python WebSocket 库，FastAPI 的 WebSocket 支持相对原始
+（3）Kafka/Redis Streams/NATS 对 3-10 Agent 的场景是过度设计——引入这些中间件增加部署复杂度，但解决的是尚不存在的规模问题
+当系统真正遇到 Flask 的并发上限时（预计在 50+ Agent + 100+ 并发 SSE 连接时），迁移路径为：Flask → FastAPI + uvicorn + Redis Pub/Sub 替代 SocketIO。这不是破坏性重写，因为路由和业务逻辑是分离的。
+
+[Normal] Q12：EventBus 是内存级还是持久化级？服务重启丢事件吗？
+
+[Normal] 当前 EventBus 是内存级实现（Python dict + list）。服务重启会丢失未消费的事件。这是一个已知的权衡：对于 3-10 Agent 的场景，重启频率极低（数天到数周一次），且事件数据同时在 activity_log 表中持久化，重启后前端拉取全量快照即可恢复。未来计划增加 Redis 作为 EventBus 后端，实现事件持久化和跨进程消费。
+
+[Normal] Q13：socketio.emit 放线程池只是缓解阻塞，真正的背压方案是什么？
+
+[Normal] 承认线程池只是权宜之计。真正的背压方案分三个层次：
+（1）当前 —— 线程池 + 队列上限（max_workers=8），超出后丢弃旧事件（非关键事件可容忍丢失）
+（2）近期 —— 按房间优先级分级：agent_update > alert_event > stat_snapshot
+（3）远期 —— 引入 Redis Streams 做事件缓冲，消费者按自身速率拉取（pull-based），天然解决背压
+
+[Heading 2] 14.3 数据模型与存储
+
+[Normal] Q14：natural_key 去重会不会误伤合法重复事件？
+
+[Normal] natural_key 的组成是 agent_id + session_id + seq，其中 seq 是同一个 Agent 在同一个 Session 内的递增序号。同一 Agent 在同一 Session 中产生两个语义相同但 seq 不同的 Turn（如两次「读取同一个文件」）会有不同的 natural_key，不会误伤。真正的风险是：数据源重启或重采导致 seq 不连续，新 Turn 可能与已存在的 Turn 有相同的 seq（概率极低，因为 seq 是日志文件的逻辑序号）。当前做法是 INSERT OR IGNORE + 应用层预查，先到先得。未来计划改为 INSERT OR REPLACE + 保留最新时间戳的版本。
+
+[Normal] Q15：gzip JSONL 归档后查询/搜索/回放怎么做？还是只能冷存储？
+
+[Normal] 当前归档是冷存储（能查但要手动解压）。已在路线图中的改进：
+（1）归档时同时写入轻量索引文件（agent_id + session_id + time_start → 归档文件 + 字节偏移量）
+（2）CLI 增加 myaw log replay --trace-id <id> 命令，自动定位归档文件 + seek 到指定偏移量，只解压相关 JSONL 行
+（3）长期方案：考虑引入 DuckDB 作为归档查询引擎，直接对 gzip JSONL 执行 SQL 查询，无需解压全量文件
+
+[Normal] Q16：VACUUM 在大库下会不会阻塞？
+
+[Normal] 会。SQLite VACUUM 需要复制整个数据库，期间写操作被阻塞。当前应对策略：
+（1）VACUUM 仅在归档/清理操作后触发（~每天一次），不在采集周期内执行
+（2）增加配置项 vacuum_interval，默认为 0（自动），可设为 -1（禁用自动 VACUUM，改用手动或 cron 触发）
+（3）迁移到 PostgreSQL 后，使用 pg_repack 替代 VACUUM（不锁表）
+
+[Normal] Q17：有没有 schema migration 机制？
+
+[Normal] 当前没有独立的 migration 框架。db.py 在每次启动时执行 CREATE TABLE IF NOT EXISTS + ALTER TABLE 语句，属于「启动时检查 + 补缺列」的轻量方案。这对于当前阶段足够（表结构变化不频繁），但未来字段重命名、类型变更等复杂迁移需要引入 Alembic 或类似的 migration 工具。已记录在技术债清单中。
+
+[Heading 2] 14.4 Agent 监控核心
+
+[Normal] Q18：状态机判定的准确率怎么样？会不会有状态震荡（flapping）？
+
+[Normal] 准确率的量化数据尚未收集（需要真实生产环境的标注数据作为 ground truth），这是必须诚实回答的。
+当前设计中的防震荡机制包括：
+（1）状态变更依赖多种信号源交叉验证（heartbeat + activity + last_seen），不是单一阈值触发
+（2）offline 判定需要 2 倍超时（默认 600s），且仅当 heartbeat 是最新信号时才触发，避免短时网络波动误判
+（3）status_since 记录进入当前状态的准确时间，metadata 存储 status_reason，方便事后审计
+但必须承认：idle 和 blocked 的边界在实际场景中确实存在灰色地带。目前的 idle 是不确定态，blocked 是明确异常态——这个区分的准确性需要通过真实运行数据来校准。
+
+[Normal] Q19：Agent 可以撒谎吗？比如一直发 heartbeat 但实际上卡死了？
+
+[Normal] 可以。当前系统信任 Agent 的上报。这就是为什么状态机综合了三个信号源——即使 Agent 持续发 heartbeat，如果 activity_log 显示长时间无新活动，系统也会将状态降级为 idle。但更深层的检测（Agent 发 heartbeat 但实际卡死）需要在 Agent 侧注入探针——比如定期执行轻量任务验证 Agent 的响应能力——这是 Agent Backend 抽象层要解决的问题。
+
+[Normal] Q20：如何检测死循环、prompt collapse、reasoning degeneration 这些真正的 AI 专有问题？
+
+[Normal] 这是 AI Agent 监控领域的前沿问题，也是 MyAgentWatch 区别于传统 APM 的核心方向。当前实现：
+（1）死循环检测——规则引擎监控「同一工具调用同一参数的重复次数」「同一文件在连续 N 个 turn 中被重复读取」「Token 消耗与任务进度的比率」，叠加触发 blocked 状态
+（2）prompt collapse——SSE 事件流中 thinking 内容长度/熵值持续下降 + 重复句式增多，触发「上下文退化」告警
+（3）reasoning degeneration——thinking 中出现高频的「let me try again」「I need to reconsider」「let me start over」等模式，触发「推理退行」信息通知
+这些检测目前基于规则（手写阈值），未来计划引入 anomaly detection（基于历史行为基线自动学习正常模式）。但必须诚实地说：这些都是启发式方法，有误报风险。当前阶段的目标不是零误报，而是「不漏报严重问题」——优先召回率。
+
+[Normal] Q21：blocked 和 error 的业务边界是什么？
+
+[Normal] ● error —— Agent 遇到了一次性或短期的错误：模型调用失败、工具返回非零退出码、配置文件解析错误。属于「可自愈」或「需关注」的级别
+
+[Normal] ● blocked —— error 状态持续时间超过 2 倍超时阈值（默认 600s），说明 Agent 无法自行恢复。属于「需人工介入」的级别
+
+[Normal] ● 递进关系 —— error →（持续无恢复）→ blocked。就像 PagerDuty 的 warning → critical 升级机制
+
+[Heading 2] 14.5 安全与权限
+
+[Normal] Q22：有没有 RBAC、多租户、namespace 隔离？
+
+[Normal] 诚实回答：当前没有。v2.1 的权限模型是最简单的两级——前端免认证（部署在内网/本机）、API 需要 Bearer Token。
+这是有意为之的设计决策：在项目初期（< 50 用户），RBAC 的复杂度远超它带来的价值。
+多租户隔离已纳入中期路线图（6-7 月），届时会增加 workspace 概念：每个 workspace 有独立的 Agent 集、数据源、群聊频道，角色分为 admin（全部权限）/ member（读 + 写自己的 Agent）/ viewer（只读）。
+这也是 SQLite → PostgreSQL 迁移的关键触发点——SQLite 无法高效支持行级安全策略。
+
+[Normal] Q23：thinking 内容会不会有隐私或安全问题？Agent 输出中的 API Key 是否自动脱敏？
+
+[Normal] 当前系统原样保存 thinking 和 Agent 输出，不做自动脱敏。这是一个已知的安全边界。
+为什么不做自动脱敏：（1）脱敏规则高度依赖上下文（不同项目/语言/框架的密钥格式不同），通用规则误伤率太高；（2）thinking 内容被篡改后会影响审计完整性。
+替代方案：（1）文档中明确告知用户「系统会原样保存 Agent 输出」；（2）新增配置项 log_sensitive_filter 允许用户自定义正则脱敏规则（如 \b(sk-[a-zA-Z0-9]{32,})\b）；（3）前端页面增加「敏感内容警告」标记。
+对于企业场景，建议部署在内网（不对公网暴露），且通过 Nginx 反向代理 + IP 白名单加固。
+
+[Normal] Q24：恶意 Agent 伪造消息/状态/handoff，系统能识别吗？
+
+[Normal] 当前不能。系统信任所有通过合法 PAT 认证的 Agent 上报的数据。
+防御层次规划：（1）签名验证——Agent 上报数据时附带 HMAC 签名，服务端验证签名后再写入（要求 Agent 侧植入 SDK）；（2）行为基线——Agent 的行为模式和正常基线偏差过大时自动标记为 suspicious；（3）审计告警——对异常的 handoff 链（如 A→B→C→A 形成环）触发安全告警。
+但必须承认：在 Agent 数量少（< 10）且团队内部信任的场景下，恶意 Agent 不是当前主要威胁。这个优先级排在数据完整性之后。
+
+[Heading 2] 14.6 可观测性与自我监控
+
+[Normal] Q25：谁来监控 MyAgentWatch 自己？如果它崩了，告警还发得出去吗？
+
+[Normal] 这是可观测性领域的经典问题——「谁来监控监控系统」。当前方案：
+（1）MyAgentWatch 自身作为 system 类型的 Agent 注册在 agents 表中，采集自己的 CPU/内存/磁盘/运行时长，通过 health_check 端点暴露
+（2）外部健康检查——check.py 脚本可被 cron 调用，定期检查 http://localhost:10000/api/health，异常时发送独立通知（邮件/webhook）
+（3）告警独立于 MyAgentWatch——关键告警规则同时在 MyAgentWatch 和外部 cron 中配置（双通道），确保 MyAgentWatch 自身宕机时告警不丢失
+但必须诚实地说：这个方案对于 SLA 99.9% 的场景（如金融交易监控）是不够的。生产级部署建议配合外部 watchdog（如 systemd 自动重启）和使用独立告警通道（如 PagerDuty webhook 直接从 Agent 侧发出）。
+
+[Normal] Q26：有没有 queue lag / event latency / dropped events / reconnect count 这些 SLI？
+
+[Normal] 当前没有系统化的 SLI 面板。这些指标部分可以通过现有数据推算（activity_log 的 timestamp 差值推算事件延迟），但没有统一收集和展示。已在中期路线图规划：
+（1）新增 sli_metrics 表——记录采集延迟、推送延迟、队列深度、丢事件计数、重连次数
+（2）新增 /api/sli 端点——返回最近 1h/24h/7d 的 SLI 趋势
+（3）前端新增「系统健康」页面——展示 MyAgentWatch 自身的运维指标
+这是从 dashboard 进化到 observability platform 的关键一步。
+
+[Heading 2] 14.7 工程化与质量
+
+[Normal] Q27：单元测试覆盖率多少？有没有 CI/CD？
+
+[Normal] 诚实回答：当前测试覆盖率不足 30%。核心模块（collector.py 的状态机逻辑、pricing.py 的成本计算）有测试覆盖，但数据源适配器（依赖真实 SQLite 文件）和前端代码缺乏系统化测试。
+CI/CD 尚未建立——当前开发模式是本地开发 + 手动测试 + changelog 记录。这是项目最大的技术债，也是从「个人项目」走向「团队项目」必须跨越的门槛。已在 6 月路线图中列为 P0 基础设施项：GitHub Actions CI（lint + unit test + integration test）+ 最低覆盖率门槛 60%。
+
+[Normal] Q28：为什么前端坚持「零构建工具链」？是工程优势还是技术债？
+
+[Normal] 两者都有。当前阶段（一人开发、快速迭代）确实是优势——修改 JS 文件 → 刷新浏览器 → 立即看到效果，没有 webpack/vite 的构建等待时间。但必须承认：当代码量突破某个阈值后（当前约 3000 行 JS），零构建工具链带来三个问题：（1）没有模块化管理，appState 全局对象的命名冲突风险；（2）没有 TypeScript 类型检查，重构时容易引入 bug；（3）无法做 tree-shaking 和代码分割，首次加载体积大。
+迁移计划：6 月任务系统上线后，前端代码量预计增长 50%+，届时引入 Vite + vanilla JS（不引入 React/Vue 框架，保持轻量），用 ES modules 替代全局变量，用 TypeScript 替代纯 JS。这是渐进的工程化改进，不需要重写。
+
+[Normal] Q29：collector.py 的事务边界怎么定义？有没有 deadlock 风险？
+
+[Normal] SQLite 的锁粒度是数据库级别（不是行级锁）。当前每个 database() context manager 内部自动提交，多个写入操作串行化（WAL 模式下写入不阻塞读取，但写入之间是串行的）。理论和实测均未遇到死锁。
+但有一个已知的并发风险：_persist_turns() 中的批量写操作（executemany）可能持有写锁较长时间（大量 Turn 时可能 1-3 秒），期间 collect_all() 中的其他写入操作（_persist_agents、_persist_data）被阻塞。解决方案：将大批量写入拆分到更小的批次（每 500 条提交一次）已在代码中实现。
+
+[Heading 2] 14.8 产品战略
+
+[Normal] Q30：项目的北极星指标是什么？
+
+[Normal] 当前定义的核心指标（按优先级）：
+（1）Token 成本可追溯率——有多少百分比的 Token 消耗能精确归属到具体的 Agent / Session / 任务。目标 > 95%。
+（2）故障发现时间（TTD, Time to Detect）——从 Agent 出现异常到用户收到通知的延迟。目标 < 30s。
+（3）Agent 间通信的透明化覆盖率——有多少次 Agent handoff/委托被记录并可视化。目标 100%（所有通信都在群聊中可见）。
+这三个指标直接对应用户的三个核心痛点：省钱（1）、稳定性（2）、透明化（3）。
+
+[Normal] Q31：核心护城河是什么？如果 OpenAI/Anthropic 官方下场做 Agent observability，怎么应对？
+
+[Normal] 护城河有三层：
+（1）Agent 通信总线——把 Agent 之间的 ACP/IPC 通信可视化。这不是 LLM 厂商的核心能力（他们的 focus 在模型质量而非 Agent 编排），而且这是跨厂商的需求——一个团队可能同时用 Anthropic 的 Claude Code 和 DeepSeek 的编码 Agent，需要统一通信层。
+（2）厂商中立定价模型——8 家厂商 37 个模型的价格对比和成本归因，官方工具只会覆盖自家模型。
+（3）极简部署——docker-compose up 即用 vs 官方工具通常需要注册云账号、配置 API key、数据上传云端。
+如果 OpenAI/Anthropic 真的下场：短期会有冲击，但它们的工具大概率只监控自家的 Agent（Claude Code 的 Dash 只展示 Claude 的 Token），而 MyAgentWatch 是多厂商 Agent 的统一监控面。
+
+[Normal] Q32：Agent 社交到底是刚需还是伪需求？
+
+[Normal] 坦诚地说：对于个人开发者，Agent 社交不是刚需。对于多 Agent 团队（3+ Agent 并行工作），它是刚需——但「刚需」的不是「聊天」功能，而是「Agent 间通信的可视化和审计」。群聊只是这个能力的 UI 表达。
+打个比方：Docker 的「刚需」是容器化，不是 Docker Desktop 的 GUI。如果用户不喜欢群聊 UI，完全可以用 CLI（myaw chat / myaw feed）或 API 来查看 Agent 间通信。群聊只是最直观的表达方式。
+
+[Normal] Q33：开源商业化路径是什么？
+
+[Normal] 当前阶段（v2.1）专注于产品验证和社区反馈，不考虑商业化。未来可能的路径：
+（1）开源核心（Open Core）——基础监控 + 群聊开源免费，高级告警 + 多租户 + SSO 作为企业版
+（2）SaaS 托管版——面向不想自己部署的用户，按 Agent 数收费
+（3）插件市场——第三方数据源适配器、告警规则模板、前端 Widget 的交易平台
+但必须强调：这些是远期愿景（至少 2027），当前一切注意力在产品本身。
+
+[Heading 2] 14.9 真实验证与现状
+
+[Normal] Q34：有没有真实用户在用？有哪些验证过的数据？
+
+[Normal] 诚实回答当前状态（2026 年 6 月 9 日）：
+（1）开发和测试环境——项目在开发者本地持续运行，监控 5 个 Agent（Claude Code 的 plan/build/explore + OpenCode 实例），日均产生 200-500 条 token_records + 50-100 条 conversation_turns
+（2）已在实际开发中验证的功能：Token 成本监控（准确追踪了 5-6 月的 Token 消费）、SSE 事件流（实时展示 Agent 的 thinking 和 tool_call）、群聊（Agent 间 handoff 消息的紫色卡片展示）
+（3）尚未在真实多用户环境中验证的功能：告警规则引擎的误报/漏报率、大规模 Agent（10+）的并发性能、CLI 客户端的跨平台兼容性
+（4）需要用户反馈验证的方向：群聊在真实团队协作中的使用频率、通知收件箱的噪音水平、Token 仪表盘的 UI 易用性
+
+这是一个诚实的自我评估：MyAgentWatch v2.1 是一个功能完整的 Alpha 产品，在开发者自己的环境中运行良好，但尚缺乏外部用户的验证数据。6 月的首要目标是完成 Agent Backend 抽象层和任务系统，然后寻求第一批外部用户（3-5 个团队）的试用反馈。
+
+[Normal] Q35：删掉所有花哨 UI 之后，还剩下什么硬价值？
+
+[Normal] 这是一个很好的「剥离测试」。如果去掉前端所有 UI，只保留：
+（1）REST API（40+ 端点）——所有 Token 查询、Agent 状态、会话历史、告警记录均可通过 API 访问
+（2）SSE 事件流——持续推送 Agent 活动事件，可接入任意消费端
+（3）CLI 客户端（11 个命令）——终端内完成所有核心操作
+（4）collector 采集引擎 + 状态机 + 告警引擎 + 日聚合
+
+剩下的是一个完整的 Agent 数据采集和分析引擎，可以用 API 驱动任何前端（Grafana 面板、自定义 Dashboard、CI/CD 集成）。群聊和事件流 UI 是锦上添花，核心引擎才是雪中送炭。这说明 MyAgentWatch 的架构确实是前后端分离的——前端是可替换的，后端是独立的。
+
+[Heading 2] 14.10 数据采集与适配器（答辩新增）
+
+[Normal] Q36：新数据源接入到底要改多少代码？
+
+[Normal] 三步：(1) 新建适配器文件实现 SourceInterface 三个方法；(2) @register_source 装饰器注册到 SOURCE_REGISTRY；(3) config.yaml 加一行 type 声明。核心代码（collector/API/前端）一行不改。做到了「对扩展开放，对修改封闭」。
+
+[Normal] Q37：不同 CLI 日志格式不一样怎么解析？数据源格式变了怎么应对？
+
+[Normal] 每个适配器封装自己的解析逻辑，对 Collector 输出统一的 CollectedData 结构。格式变更：connect() 做兼容检查、字段映射集中适配器内部、未知字段被忽略（graceful degradation）。
+
+[Normal] Q38：怎么处理重复上报、脏数据、部分字段缺失？
+
+[Normal] 重复：INSERT OR IGNORE + UNIQUE 约束 + 内存 Set 预查。脏数据：必填为空跳过、时间戳异常用当前时间替代、Token 负数设 0。字段缺失：使用 DEFAULT 或 NULL，查询用 COALESCE 处理，前端显示「-」。
+
+[Heading 2] 14.11 告警与运维（答辩新增）
+
+[Normal] Q39：4 条默认告警阈值对所有团队都适用吗？误报漏报怎么控制？
+
+[Normal] 不一定——阈值需通过 config.yaml 定制。当前优先召回率（不漏报严重问题），容忍一定误报。未来改进：静默窗口（夜间降灵敏度）、分级告警、基于历史基线动态阈值。
+
+[Normal] Q40：告警支持静默窗口、分级、合并吗？触发后如何通知？
+
+[Normal] 当前不支持静默窗口和告警合并——已列入中期路线图。通知路径：alert 表写入 → WebSocket alert_event → 前端 Toast + 收件箱通知。独立于 MyAgentWatch 的告警通道（如 webhook）正在规划中。
+
+[Heading 2] 14.12 CLI 客户端深度（答辩新增）
+
+[Normal] Q41：为什么 CLI 只用标准库不用 requests？跨平台兼容性怎样？
+
+[Normal] 零依赖是最高优先级——CLI 需在任何 Python 3.10+ 环境直接运行。urllib.request 足够（GET/POST/DELETE + Bearer Token + 超时）。代价是代码更啰嗦但换来零安装。Windows/macOS/Linux 均已测试通过。
+
+[Normal] Q42：心跳 15 秒怎么定的？多开 daemon 怎么办？config.json 明文存 token 安全吗？
+
+[Normal] 15 秒平衡精度和负载——5 秒太频繁、60 秒太慢（状态机超时 300s）。多开 daemon 被状态机自然处理——同一 Agent 多次心跳只保留最后一次。config.json 建议设 600 权限，未来支持 keyring 存储。
+
+[Heading 2] 14.13 前端深度（答辩新增）
+
+[Normal] Q43：8 个页面哪个是主入口？高频和低频怎么区分？
+
+[Normal] 仪表盘是主入口（4 卡片 + Agent 表）。高频：仪表盘（全局）、Token 面板（成本）、事件流（排障）。低频：拓扑图（关系分析）、日志查看器（深度排查）。导航栏按使用频率排序。
+
+[Normal] Q44：前端去重 Set 无限增长怎么办？大数量下渲染性能？
+
+[Normal] 去重 Set 上限 5000 条 ID，LRU 淘汰。Chart.js Canvas 渲染大数量优于 DOM。事件流虚拟滚动（只渲染可视行）。D3 DAG 在 > 500 节点时退化——当前场景（< 100 节点）正常。
+
+[Heading 2] 14.14 性能与扩展（答辩新增）
+
+[Normal] Q45：3-10 Agent 和 50+ Agent 的边界在哪里？
+
+[Normal] 50 Agent 时瓶颈依次：collector 单进程采集（<1s→5-10s）→ SQLite 写锁争抢 → WebSocket 全量广播。逐一方案：collector 多进程、PostgreSQL 迁移、增量推送替代全量快照。
+
+[Normal] Q46：SSE 长连接多了有压力吗？慢客户端怎么处理？
+
+[Normal] Flask 线程模型——50 SSE 连接 + 8 采集 + HTTP ≈ 60 线程，内存压力不大（~1MB/线程）。慢客户端：SSE 写入超时 30s 后断开，客户端自动重连。远期用 Redis pub/sub 替代线程池 push。
+
+[Heading 2] 14.15 安全（答辩新增）
+
+[Normal] Q47：PAT 令牌为什么带 myaw_ 前缀？只存哈希、明文只返回一次的设计思路？
+
+[Normal] myaw_ 前缀便于识别和审计（日志中快速定位自己的令牌）。SHA-256 哈希存储——即使数据库泄露攻击者也无法还原明文。明文只返回一次——用户需自行保管，丢失后只能重新生成。支持撤销令牌（DELETE /api/users/<id>/token）。
+
+[Normal] Q48：有没有 audit log 不可篡改设计？如何平衡透明化和安全性？
+
+[Normal] 当前无不可篡改设计。改进计划：WAL 日志 hash chain、关键审计事件 append-only、定期导出到独立只读存储。透明化 vs 安全性的平衡：用户自定义脱敏规则 + 内网部署 + Nginx IP 白名单，必要时牺牲部分透明化换取安全。
+
+[Heading 2] 14.16 工程化（答辩新增）
+
+[Normal] Q49：有没有 benchmark / chaos engineering？如何验证 collector 正确性？
+
+[Normal] 当前都没有——诚实回答。计划：(1) synthetic workload generator 模拟 N 个 Agent 产生事件测性能；(2) fault injection 模拟数据源断开/格式变化/锁冲突；(3) collector 正确性通过比较源数据库和聚合数据库的数据一致性来验证。
+
+[Normal] Q50：服务重启后状态还能恢复吗？数据会丢吗？
+
+[Normal] 所有状态持久化在 SQLite——重启后 collector 从 last_sync_time 恢复增量采集，状态机从已有数据重新评估。内存 EventBus 事件会丢（非关键——activity_log 已持久化，前端重新拉取）。数据库写操作在 transaction 中——要么全部成功要么全部回滚，不丢数据。
+
+[Heading 2] 14.17 竞品（答辩新增）
+
+[Normal] Q51：为什么不直接用 Multica / Langfuse / Grafana？你的定位是替代还是补位？
+
+[Normal] 补位，不替代。Multica 管任务编排（MyAgentWatch 管监控），Langfuse 做 LLM tracing（MyAgentWatch 做 Agent 间通信可视化），Grafana 管机器指标（MyAgentWatch 管 Agent 专属指标）。用户可以同时使用所有工具——MyAgentWatch 填补它们之间的空白。
+
+[Normal] Q52：如果竞品也加群聊+事件流+告警，你怎么办？大厂护城河是什么？
+
+[Normal] 群聊和事件流是产品表达，真正的护城河是 Agent 适配器生态和厂商中立的数据模型。竞品加功能容易，但跨 8 家厂商的统一数据模型和定价表需要长期积累。速度是关键——先发优势建立社区和生态。
+
+[Heading 2] 14.18 路线图与商业化（答辩新增）
+
+[Normal] Q53：6 月三目标优先级为什么这样排？中期目标会不会太散？
+
+[Normal] Agent Backend 抽象层是底座（先统一接口）→ 任务系统是核心缺失（补 Multica 有的能力）→ 群聊增强是差异化武器（让群聊从「能看」变「能用」）。中期目标（多语言/PWA/插件市场）都是已有核心的外延，不涉及架构重写，不会太散。
+
+[Normal] Q54：谁会付费？个人订阅、团队订阅还是企业订阅？如何证明值得长期投入？
+
+[Normal] 付费预测：企业平台团队（多租户+审计）> AI 创业公司（向客户展示透明度）> 个人（托管版）。定价参考：个人 $9/月/Agent、团队 $49/月/10 Agent、企业定制。Agent 数量指数增长——每个开发者 3-5 Agent、每团队 20-50 Agent。2026 下半年到 2027 上半年是 Agent 可观测性从 nice-to-have 变 must-have 的转折窗口。
+
+[Heading 2] 14.19 部署运维（答辩新增）
+
+[Normal] Q55：Windows/macOS/Linux 都能部署吗？出故障排查路径是什么？
+
+[Normal] 推荐 Docker（三平台统一）。纯本地：pip install + python app.py 即可。排查路径：check.py → /api/health → collector 日志 → sqlite3 "PRAGMA integrity_check"。最易出错：data_sources.db_path 路径错误、alert_rules 阈值不匹配使用模式。
+
+[Normal] Q56：运维成本真的低吗？日常维护要做什么？
+
+[Normal] 日常几乎零维护——数据自动归档 + VACUUM。唯一需关注：磁盘空间（归档目录增长）、定价表更新（厂商调价时更新 pricing 表）、配置文件备份。多实例部署每个 OpenCode 实例对应一个 MyAgentWatch 实例。
+
+[Heading 2] 14.20 最刁钻追问（答辩新增）
+
+[Normal] Q57：这是不是你自己最需要所以才做出来的？会不会只是开发者自嗨？
+
+[Normal] 是的——项目确实起源于开发者自身需求。但最好工具往往来自开发者解决自己问题（Git 来自 Linus、Docker 来自 dotCloud）。关键是能否让其他开发者也觉得「这正是我需要的」。当前自嗨风险存在——需要外部用户反馈验证。
+
+[Normal] Q58：群聊、动态、好友是不是在稀释主线？删掉一半功能你删什么？
+
+[Normal] 群聊本质是 Agent 通信监控的 UI 表达——不是社交功能。删一半：好友、动态、通讯录（Agent 通信不需要社交化）、拓扑 DAG（nice-to-have）。留一个页面：仪表盘（信息密度最高）。留一个指标：今日 Token 成本。
+
+[Normal] Q59：如果别人说「只是把日志换了个好看的壳」「不是刚需」「竞品已经有了」？
+
+[Normal] (1)「换壳」——如果只是换壳，能做到跨 Agent 通信可视化和 Token 到 Agent 的成本归因吗？日志做不到。(2)「不是刚需」——对单 Agent 不是，对 5 Agent 团队绝对是。Agent 越多需求越刚性。(3)「竞品有了」——哪个竞品同时做到 Agent 间通信实时可视化 + 8 厂商 37 模型多 Agent Token 归因？
+
+[Heading 2] 14.21 终极总结
+
+[Normal] Q60：北极星指标 / 成功标准 / 最想让评委记住的一句话？
+
+[Normal] 北极星指标：Token 成本可追溯率 > 95%。成功标准：用户用后 (1) Token 成本降 20%+；(2) 异常发现时间从数小时降到数分钟；(3) 每天至少打开一次。最想让评委记住：「MyAgentWatch 让 AI Agent 不再是一个黑盒——你知道每个 Agent 在想什么、在做什么、花了多少钱。就像 Kubernetes 让微服务可管理一样，MyAgentWatch 让 AI Agent 可观测。」
+
+[Normal] Q61：这个项目是在做监控工具，还是 AI Agent 时代的 Kubernetes？
+
+[Normal] 当前是 Datadog for Agents（监控工具），愿景是 AI Agent 时代的可观测性基础设施。不急于成为 Kubernetes——先做好「看得见」这一步。两条路技术深度不同、竞争对手不同、融资逻辑不同。当前阶段的选择是：先做好监控，让用户离不开，再考虑编排。
+
+
+=== TABLES ===
+
+Table 0: 10 rows x 3 cols
+  Row 0: ['层次', '技术选型', '为什么选它']
+  Row 1: ['后端框架', 'Python 3.12 + Flask 3.x', 'Python 是 AI 生态的 lingua franca；Flask 轻量灵活，适合中小规模项目快速迭代；3.12 支持最新语言特性']
+  Row 2: ['实时推送', 'Flask-SocketIO + SSE', 'WebSocket 承载结构化数据推送（增量 2s + 全量 10s）；SSE 承载事件流（单向大文本）；双通道各司其职']
+  Row 3: ['定时调度', 'APScheduler', 'Python 生态最成熟的进程内调度器，支持 cron 和 interval 两种模式，无需外部 Redis/Celery 依赖']
+  Row 4: ['配置管理', 'PyYAML + 模板引擎', 'config.yaml 配置驱动，支持行业模板（量化交易 / Web 开发）一键切换告警规则和 Agent 分组']
+  Row 5: ['系统监控', 'psutil', '跨平台系统资源采集（Windows/Linux/macOS），CPU/内存/磁盘/网络全部覆盖，开销极小']
+  Row 6: ['前端图表', 'Chart.js (CDN)', '零构建工具链，CDN 引入即用；柱状图 + 折线图满足所有可视化需求']
+  Row 7: ['拓扑可视化', 'dagre + d3.js (CDN)', 'dagre 布局算法 + d3.js 渲染引擎，生成 DAG 交互式 Agent 流程图']
+  Row 8: ['数据存储', 'SQLite3 × 2', 'opencode.db 源库只读 + myagentwatch.db 聚合库读写；单文件零运维；无需独立数据库进程']
+  Row 9: ['容器化', 'Docker + docker-compose', '一键部署；卷挂载实现配置/数据持久化；:ro 只读挂载保护源数据']
+
+Table 1: 5 rows x 4 cols
+  Row 0: ['适配器', '数据源类型', '采集内容', '增量策略']
+  Row 1: ['OpenCodeDBSource', 'SQLite 数据库', 'session 表（会话树、标题、目录）、message 表（角色、模型、Token、成本）、part 表（thinking/tool/text/step 内容块）', '记录 last_sync_time，WHERE time_updated > last_sync']
+  Row 2: ['OpenCodeLogSource', '日志文件（~/.local/share/opencode/log/*.log）', 'LLM 调用耗时（elapsed）、服务启动/停止事件、工具注册清单、异常堆栈、权限评估日志', '记录文件名 + 行号偏移量，seek 到断点继续读']
+  Row 3: ['ClaudeCodeSource', 'Claude Code 日志文件', 'Claude Code CLI 的原生日志格式，包括思考过程、工具调用、handoff 事件、文件读写操作', '同日志文件增量策略']
+  Row 4: ['SystemSource', 'psutil 系统调用', 'CPU 使用率（每核 + 总体）、内存使用量/百分比、磁盘 I/O、磁盘使用率、网络 I/O', '每次全量采集（psutil 调用开销 < 1ms）']
+
+Table 2: 7 rows x 5 cols
+  Row 0: ['状态', '颜色', '图标', '含义', '触发条件']
+  Row 1: ['active', '绿色', '🟢', '正常运行中', '最近有心跳或活动记录 AND 无近期错误 AND 模型ID已配置']
+  Row 2: ['working', '蓝色', '🔵', '正在执行任务', 'Agent 显式上报 working 状态（通常在处理用户请求时自动切换）']
+  Row 3: ['idle', '黄色', '🟡', '空闲或状态不确定', '新注册的 Agent 等待首次心跳 OR 活动时间戳超过阈值但非深度超时 OR 数据来源非心跳且不确定']
+  Row 4: ['error', '红色', '🔴', '发生错误', '近期有 error/critical 级别的活动记录 OR 模型 ID 缺失（需模型却未配置）']
+  Row 5: ['blocked', '橙色', '🟠', '被阻塞需人工介入', 'error 状态持续超过 2 倍超时阈值（默认 600s），判定为持久性故障']
+  Row 6: ['offline', '紫色', '🟣', '离线/不可达', '数据源被禁用/删除/断开 OR 心跳丢失且 heartbeat 为最新信号 OR 从未启动']
+
+Table 3: 5 rows x 6 cols
+  Row 0: ['规则名称', '监控指标', '运算符', '阈值', '严重级别', '业务含义']
+  Row 1: ['agent_idle', '当前时间 - 最后活动时间', '>', '3600 秒', 'warn', 'Agent 超过 1 小时无任何活动，可能已停止工作或任务卡住']
+  Row 2: ['high_cost', '单会话累计 Token 成本', '>', '$5.00', 'warn', '单次对话花费超过 5 美元，需关注是否正常（大量分析任务）还是异常（死循环）']
+  Row 3: ['tool_failure_rate', '失败工具调用 / 总工具调用 × 100%', '>', '20%', 'critical', '工具调用失败率超过 20%，可能权限问题、API 变更、文件系统满等严重故障']
+  Row 4: ['cache_hit_rate_low', 'cache_read / (cache_read + cache_write) × 100%', '<', '30%', 'info', '缓存命中率过低，可能 prompt 设计不佳导致每次请求都需重新计算，增加延迟和成本']
+
+Table 4: 6 rows x 4 cols
+  Row 0: ['优化项', '优化前', '优化后', '效果']
+  Row 1: ['daily_stats 聚合频率', '每次采集循环（每 2 秒）', '每天一次（首次访问时触发）', '数据库写入减少 43,200 倍']
+  Row 2: ['轮询间隔', '2 秒', '5 秒', '数据库读取压力降低 60%']
+  Row 3: ['工作线程数', '4 线程', '8 线程', '采集 + 推送并行度翻倍']
+  Row 4: ['socketio.emit 执行', '同步阻塞在 HTTP 响应线程', '提交到 ThreadPoolExecutor 后台执行', 'HTTP 响应延迟从 200ms+ 降至 < 20ms']
+  Row 5: ['actual_last 计算', '仅使用 heartbeat', 'max(heartbeat, activity_log, last_seen_time)', '消除误判，旧版 Agent 不会因无心跳而误报离线']
+
+Table 5: 31 rows x 4 cols
+  Row 0: ['资源组', '端点', '方法', '说明']
+  Row 1: ['Agent', '/api/agents', 'GET', '获取所有 Agent 列表（含实时状态、模型、所属数据源）']
+  Row 2: ['Agent', '/api/agents/<id>', 'GET', '获取单个 Agent 详情 + 最近活动记录 + Token 统计']
+  Row 3: ['会话', '/api/sessions', 'GET', '获取活跃/历史会话列表（支持 status/agent_id 过滤）']
+  Row 4: ['会话', '/api/sessions/<id>', 'GET', '获取会话详情（标题、目录、完整 message→part 时间线）']
+  Row 5: ['统计', '/api/stats/overview', 'GET', '仪表盘概览：活跃 Agent 数、今日 Token 总量、成功率、今日成本']
+  Row 6: ['Token', '/api/stats/tokens', 'GET', 'Token 综合数据：by_day + by_model + overview']
+  Row 7: ['Token', '/api/stats/tokens/by-agent', 'GET', '按 Agent 聚合：每个 Agent 的 input/output/cost 总和']
+  Row 8: ['Token', '/api/stats/tokens/by-hour', 'GET', '按小时趋势：最近 24h 每小时的 Token 消耗曲线']
+  Row 9: ['Token', '/api/stats/tokens/by-model', 'GET', '按模型聚合：每种模型的用量和成本排序']
+  Row 10: ['Token', '/api/stats/tokens/unmapped', 'GET', '未映射诊断：pricing 表中没有的模型及其 Token 量']
+  Row 11: ['图表', '/api/stats/charts', 'GET', 'Chart.js 数据：延迟折线 + Token 柱状图原始数据']
+  Row 12: ['时间线', '/api/timeline', 'GET', '活动时间线：按时间排序的 message + tool_call 混合流']
+  Row 13: ['时间线', '/api/timeline/flow', 'GET', 'DAG 流程图数据：节点（session/message）+ 边（parent/child/tool_call）']
+  Row 14: ['事件流', '/api/events/stream', 'GET', 'SSE 端点：Content-Type: text/event-stream 实时推送']
+  Row 15: ['日志', '/api/logs', 'GET', '实时日志流（SSE）：按 level/service 过滤的彩色日志']
+  Row 16: ['健康', '/api/health', 'GET', '系统运维状态：各数据源连接状态 + CPU/内存/磁盘指标']
+  Row 17: ['告警', '/api/alerts', 'GET', '告警列表（支持 active/resolved 过滤）']
+  Row 18: ['告警', '/api/alerts/resolve', 'POST', '手动解除指定告警']
+  Row 19: ['配置', '/api/config', 'GET', '当前运行配置快照（不含敏感信息）']
+  Row 20: ['定价', '/api/pricing', 'GET', '所有模型定价表']
+  Row 21: ['聊天', '/api/chat/messages/<conv_id>', 'GET/POST', '读取/发送群聊消息']
+  Row 22: ['聊天', '/api/chat/friend-request', 'POST', '发送好友请求']
+  Row 23: ['聊天', '/api/chat/agent-message', 'POST', 'Agent 发布动态到群聊']
+  Row 24: ['聊天', '/api/chat/share-task/<conv_id>', 'POST', '分享任务成果到指定会话']
+  Row 25: ['收件箱', '/api/inbox', 'GET', '获取通知列表（支持 limit/unread 过滤）']
+  Row 26: ['收件箱', '/api/inbox/<id>/read', 'POST', '标记单条已读']
+  Row 27: ['收件箱', '/api/inbox/read-all', 'POST', '全部标记已读']
+  Row 28: ['用户', '/api/users', 'GET/POST', '列出/创建用户']
+  Row 29: ['用户', '/api/users/<id>/token', 'POST', '为用户生成新的 PAT 令牌']
+  Row 30: ['心跳', '/api/heartbeat/<agent_id>', 'POST', '接收 Agent 主动心跳（更新状态和 last_heartbeat_at）']
+
+Table 6: 8 rows x 4 cols
+  Row 0: ['方向', '事件名', '触发时机', '负载内容']
+  Row 1: ['S→C', 'agent_update', 'Agent 状态变更时', '{agent_id, status, status_since, status_reason, tokens_1h, model_id}']
+  Row 2: ['S→C', 'stat_snapshot', '每 10 秒全量快照 + 新连接即时推送', '{active_agents, total_tokens, success_rate, today_cost, agents[]}']
+  Row 3: ['S→C', 'alert_event', '告警规则触发时', '{rule_name, level, message, agent_id, timestamp}']
+  Row 4: ['S→C', 'flow_update', 'DAG 流程图有增量变化时', '{type: add/update/remove, node_id, parent_id, data}']
+  Row 5: ['S→C', 'chat_message', '新聊天消息时', '{conversation_id, sender_name, content, sender_type, timestamp}']
+  Row 6: ['C→S', 'subscribe_logs', '客户端请求订阅日志', '{source_id, filters: {level, service, keyword}}']
+  Row 7: ['C→S', 'unsubscribe_logs', '客户端取消日志订阅', '{source_id}']
+
+Table 7: 12 rows x 4 cols
+  Row 0: ['命令', '参数', 'API 调用', '输出内容']
+  Row 1: ['connect', '--server --key', 'GET /api/users', '连接服务端 → 保存 config.json → 识别 Agent 身份 → 显示「已连接」卡片（服务端地址+版本+运行时长）']
+  Row 2: ['status', '无', 'GET /api/agents + GET /api/tokens/dashboard + GET /api/inbox', '仪表盘总览卡片：Agent 列表（状态色 + 名称 + 模型ID）+ Token Top5（按模型，tokens 量 + 成本 $）+ 未读通知数']
+  Row 3: ['dashboard', '无', 'status 的所有 API + feed 的 API', 'status 输出 + 换行 + feed 输出（合并视图）']
+  Row 4: ['agents', '无', 'GET /api/agents + GET /api/users', 'Agent 列表：状态色 + 名称 + 模型ID + 🔑 令牌标识（有关联 PAT 的 Agent 显示钥匙图标）']
+  Row 5: ['chat', '[message] [--conv N]', '有 message: POST /api/chat/messages/N | 无 message: GET /api/chat/messages/N?limit=20', '发送模式：确认「已发送」+ 内容预览 | 读取模式：最近 20 条消息（时间 + 角色图标 + 发送者 + 内容，倒序显示）']
+  Row 6: ['heartbeat', '--agent-id [--status] [--daemon]', 'POST /api/heartbeat/{agent_id}', '单次模式：发送一次心跳，显示返回状态 | 守护模式：每 15s 循环发送，按 Ctrl+C 停止（用于无内置心跳的 Agent CLI）']
+  Row 7: ['tokens', '[--days N]', 'GET /api/tokens/dashboard + /api/tokens/by-agent + /api/tokens/unmapped', 'Token 用量卡片：按日汇总 + 按 Agent Top5（名称 + Token 量 + 成本 + 任务数）+ 未定价模型警告（模型名 + Token 量）']
+  Row 8: ['feed', '无', 'GET /api/inbox?limit=30', '动态流列表：每条显示未读标识（●/○）+ 类型图标（💬消息/🤝好友/🚨告警/📤分享）+ 时间 + 标题 + 摘要（截断 100 字）']
+  Row 9: ['post', '<content>', 'POST /api/chat/agent-message', '发布 Agent 动态到群聊 → 确认「已发布」']
+  Row 10: ['friend', '<agent_id> [message]', 'POST /api/chat/friend-request', '发送好友请求 → 确认「已发送 → agent_id」']
+  Row 11: ['share', '<title> [summary]', 'POST /api/chat/share-task/1', '分享任务成果到群聊 → 确认「已分享：标题」']
+
+Table 8: 9 rows x 3 cols
+  Row 0: ['设计元素', '颜色/数值', '用途']
+  Row 1: ['页面背景', '#1a1a2e（深蓝黑）', '主背景色，降低屏幕亮度']
+  Row 2: ['卡片背景', '#16213e（深蓝）', '数据卡片、面板、表格行交替']
+  Row 3: ['主强调色', '#0f3460（中蓝）', '标题、重点数据、按钮']
+  Row 4: ['次强调色', '#e94560（红粉）', '告警、错误状态、关键高亮']
+  Row 5: ['active 状态', '#2ecc71（翠绿）', 'Agent 在线标识、成功提示']
+  Row 6: ['idle 状态', '#f1c40f（琥珀黄）', 'Agent 空闲标识']
+  Row 7: ['error 状态', '#e74c3c（红）', 'Agent 错误标识、删除按钮']
+  Row 8: ['字体', '系统默认等宽 / 14px', '代码感，适合开发者']
+
+Table 9: 9 rows x 3 cols
+  Row 0: ['页面', '路由', '核心功能']
+  Row 1: ['仪表盘', '#dashboard', '4 张概览卡片（活跃 Agent 数 / 今日 Token / 成功率 / 今日成本）+ Agent Token 柱状图（Chart.js bar chart）+ 1 小时请求延迟折线图 + Agen']
+  Row 2: ['拓扑图', '#topology', 'dagre 自动布局 + d3.js 渲染的 DAG 交互流程图。节点 = session/message，边 = parent→child 关系。支持拖拽、缩放、点击节点弹出详情抽屉（显示完整 me']
+  Row 3: ['树形视图', '#tree', '基于会话 parent_id 构建的树形结构。支持展开/折叠所有节点、按 Agent 分组、点击节点弹出详情面板']
+  Row 4: ['日志查看器', '#logs', 'WebSocket 实时推送的彩色编码日志流。INFO=灰色 / WARN=黄色 / ERROR=红色 / DEBUG=浅蓝。支持按 level 和 service 过滤、关键词搜索']
+  Row 5: ['群聊', '#chat', '微信风格三栏布局（见 5.3 节详细说明）。WebSocket 实时推送新消息，消息去重，富媒体气泡']
+  Row 6: ['事件流', '#events', 'SSE 实时推送（见 5.2 节详细说明）。分组 Agent 下拉 + 类别 checkbox + 星标 + 仅错误 + 暂停/清空 + 详情展开']
+  Row 7: ['Token 仪表盘', '#tokens', '柱状图 + 按 Agent 数据表 + 按模型数据表 + 按小时趋势折线图 + 未映射模型诊断面板（红色高亮）']
+  Row 8: ['收件箱', '#inbox', '通知列表（按时间倒序）+ 未读高亮 + 类型图标 + 全部标记已读按钮']
+
+Table 10: 13 rows x 4 cols
+  Row 0: ['能力维度', 'MyAgentWatch', 'Multica', '差异化分析']
+  Row 1: ['Agent 状态监控', '✅ 6 状态机（active/working/idle/error/blocked/offline）', '✅ 5 状态（idle/working/blocked/error/offline）', 'MyAgentWatch 多了 working 状态（显式上报），区分更精细']
+  Row 2: ['Token 用量分析', '✅ 8 厂商 37 模型 / 5 级拆解 / 5 种查询维度', '✅ 多维切片（按日/时/模型/Agent）', 'MyAgentWatch 模型覆盖更广（尤其国内厂商），Token 拆解更细']
+  Row 3: ['系统资源监控', '✅ CPU / 内存 / 磁盘 / 网络（psutil）', '❌ 不支持', 'MyAgentWatch 独有，运维场景刚需']
+  Row 4: ['Agent 群聊社交', '✅ 微信风格三栏 / 富媒体气泡 / 通讯录 / 好友', '❌ 完全没有', 'MyAgentWatch 核心差异化武器']
+  Row 5: ['任务生命周期', '计划中（6/10 截止）', '✅ 完整状态流转 / 时长统计', 'Multica 当前领先，MyAgentWatch 即将补齐']
+  Row 6: ['告警系统', '✅ 内置规则引擎 / config 驱动 / 4 条默认规则', '❌ 不支持', 'MyAgentWatch 独有，主动发现问题的能力']
+  Row 7: ['SSE 事件流', '✅ 4 类事件 / 彩色编码 / 筛选 / 详情展开', '❌ 不支持', 'MyAgentWatch 独有，Agent 工作过程可视化']
+  Row 8: ['CLI 客户端', '✅ 11 个命令 / 心跳守护 / 纯标准库', '✅ CLI 连接 Agent', '两者都有，MyAgentWatch 更偏 Agent 自助管理']
+  Row 9: ['技术栈复杂度', 'Python + SQLite → 单文件数据库，pip install 即用', 'Go + PostgreSQL + Redis → 需数据库和缓存中间件', 'MyAgentWatch 部署成本极低，适合个人/小团队']
+  Row 10: ['多 Agent CLI 支持', 'Claude Code / OpenCode 及兼容工具', '11 种 CLI（Claude Code / Codex / Copilot / Cursor / Gemini / Kimi 等）', 'Multica 覆盖面更广，MyAgentWatch 聚焦核心']
+  Row 11: ['Agent 关系图', '✅ 基于会话 parent→child 自动构建', '✅ Agent 拓扑图', '两者都有，实现方式不同']
+  Row 12: ['通知收件箱', '✅ inbox 表 + 铃铛 + 未读徽章 + 自动通知', '✅ inbox_item 表', '两者都有']
+
+Table 11: 4 rows x 4 cols
+  Row 0: ['优先级', '任务', '工期', '交付物']
+  Row 1: ['P1 🔴', 'Agent Backend 抽象层', '2-3 天', '统一 SourceInterface 的子类 AgentBackend，支持通过统一接口启动/停止/配置多种 Agent CLI。首批支持 Claude Code 和 OpenCode。']
+  Row 2: ['P2 🟡', '基础任务系统', '5-7 天', '新增 tasks 表 + task_records 表，实现 queued→assigned→running→completed/failed 任务生命周期。提供 /api/tasks CRUD 端点']
+  Row 3: ['P3 🟢', 'Agent 微信强化', '3-4 天', '群聊增加：@提及、消息引用回复、表情回应、群公告、消息搜索。通讯录增加：在线状态实时更新、Agent 签名/标签。']
